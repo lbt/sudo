@@ -69,6 +69,7 @@ rm -rf %{buildroot}
 # >> install post
 install -d -m 755 %{buildroot}%{_sysconfdir}/pam.d
 install -m 644 %{SOURCE1} %{buildroot}%{_sysconfdir}/pam.d/sudo
+install -d -m 755 %{buildroot}%{_localstatedir}/lib/sudo
 rm -rf %{buildroot}/usr/share/locale
 rm -f %{buildroot}/usr/include/sudo_plugin.h
 # << install post
