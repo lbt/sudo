@@ -1,3 +1,6 @@
+* Wed Aug 14 2013 David Greaves <david@dgreaves.com> - 1.8.6p3-2
+- The %{_localstatedir}/lib/sudo ghost dir must actually be present for newer rpm builds
+
 * Mon Oct 15 2012 David Greaves <david@dgreaves.com> - 1.8.6p3-1
 - New upstream release fixes MER#379
 - Add /sbin to --with-secure-path option of ./configure
