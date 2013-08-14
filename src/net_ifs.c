@@ -83,6 +83,7 @@ struct rtentry;
 #include "missing.h"
 #include "alloc.h"
 #include "error.h"
+#include "sudo_debug.h"
 
 #define DEFAULT_TEXT_DOMAIN	"sudo"
 #include "gettext.h"
@@ -107,15 +108,16 @@ get_net_ifs(char **addrinfo)
 {
     struct ifaddrs *ifa, *ifaddrs;
     struct sockaddr_in *sin;
-#ifdef HAVE_IN6_ADDR
+#ifdef HAVE_STRUCT_IN6_ADDR
     struct sockaddr_in6 *sin6;
     char addrbuf[INET6_ADDRSTRLEN];
 #endif
     int ailen, i, len, num_interfaces = 0;
     char *cp;
+    debug_decl(get_net_ifs, SUDO_DEBUG_NETIF)
 
     if (getifaddrs(&ifaddrs))
-	return 0;
+	debug_return_int(0);
 
     /* Allocate space for the interfaces info string. */
     for (ifa = ifaddrs; ifa != NULL; ifa = ifa -> ifa_next) {
@@ -126,7 +128,7 @@ get_net_ifs(char **addrinfo)
 
 	switch (ifa->ifa_addr->sa_family) {
 	    case AF_INET:
-#ifdef HAVE_IN6_ADDR
+#ifdef HAVE_STRUCT_IN6_ADDR
 	    case AF_INET6:
 #endif
 		num_interfaces++;
@@ -134,7 +136,7 @@ get_net_ifs(char **addrinfo)
 	}
     }
     if (num_interfaces == 0)
-	return 0;
+	debug_return_int(0);
     ailen = num_interfaces * 2 * INET6_ADDRSTRLEN;
     *addrinfo = cp = emalloc(ailen);
 
@@ -166,7 +168,7 @@ get_net_ifs(char **addrinfo)
 		}
 		cp += len;
 		break;
-#ifdef HAVE_IN6_ADDR
+#ifdef HAVE_STRUCT_IN6_ADDR
 	    case AF_INET6:
 		sin6 = (struct sockaddr_in6 *)ifa->ifa_addr;
 		inet_ntop(AF_INET6, &sin6->sin6_addr, addrbuf, sizeof(addrbuf));
@@ -187,7 +189,7 @@ get_net_ifs(char **addrinfo)
 		}
 		cp += len;
 		break;
-#endif /* HAVE_IN6_ADDR */
+#endif /* HAVE_STRUCT_IN6_ADDR */
 	}
     }
 
@@ -197,7 +199,7 @@ done:
 #else
     efree(ifaddrs);
 #endif
-    return num_interfaces;
+    debug_return_int(num_interfaces);
 }
 
 #elif defined(SIOCGIFCONF) && !defined(STUB_LOAD_INTERFACES)
@@ -218,6 +220,7 @@ get_net_ifs(char **addrinfo)
 #ifdef _ISC
     struct strioctl strioctl;
 #endif /* _ISC */
+    debug_decl(get_net_ifs, SUDO_DEBUG_NETIF)
 
     sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0)
@@ -250,7 +253,7 @@ get_net_ifs(char **addrinfo)
 
     /* Allocate space for the maximum number of interfaces that could exist. */
     if ((n = ifconf->ifc_len / sizeof(struct ifreq)) == 0)
-	return 0;
+	debug_return_int(0);
     ailen = n * 2 * INET6_ADDRSTRLEN;
     *addrinfo = cp = emalloc(ailen);
 
@@ -261,10 +264,10 @@ get_net_ifs(char **addrinfo)
 
 	/* Set i to the subscript of the next interface. */
 	i += sizeof(struct ifreq);
-#ifdef HAVE_SA_LEN
+#ifdef HAVE_STRUCT_SOCKADDR_SA_LEN
 	if (ifr->ifr_addr.sa_len > sizeof(ifr->ifr_addr))
 	    i += ifr->ifr_addr.sa_len - sizeof(struct sockaddr);
-#endif /* HAVE_SA_LEN */
+#endif /* HAVE_STRUCT_SOCKADDR_SA_LEN */
 
 	/* Skip duplicates and interfaces with NULL addresses. */
 	sin = (struct sockaddr_in *) &ifr->ifr_addr;
@@ -327,7 +330,7 @@ done:
     efree(ifconf_buf);
     (void) close(sock);
 
-    return num_interfaces;
+    debug_return_int(num_interfaces);
 }
 
 #else /* !SIOCGIFCONF || STUB_LOAD_INTERFACES */
@@ -338,7 +341,8 @@ done:
 int
 get_net_ifs(char **addrinfo)
 {
-    return 0;
+    debug_decl(get_net_ifs, SUDO_DEBUG_NETIF)
+    debug_return_int(0);
 }
 
 #endif /* SIOCGIFCONF && !STUB_LOAD_INTERFACES */

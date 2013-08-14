@@ -157,52 +157,6 @@ AC_DEFUN([SUDO_IO_LOGDIR], [
 ])dnl
 
 dnl
-dnl SUDO_CHECK_TYPE(TYPE, DEFAULT)
-dnl XXX - should require the check for unistd.h...
-dnl
-AC_DEFUN([SUDO_CHECK_TYPE],
-[AC_REQUIRE([AC_HEADER_STDC])dnl
-AC_MSG_CHECKING(for $1)
-AC_CACHE_VAL(sudo_cv_type_$1,
-[AC_EGREP_CPP($1, [#include <sys/types.h>
-#include <stdio.h>
-#if STDC_HEADERS
-#include <stdlib.h>
-#endif
-#if HAVE_UNISTD_H
-#include <unistd.h>
-#endif], sudo_cv_type_$1=yes, sudo_cv_type_$1=no)])dnl
-AC_MSG_RESULT($sudo_cv_type_$1)
-if test $sudo_cv_type_$1 = no; then
-  AC_DEFINE($1, $2, [Define if your system lacks the $1 type.])
-fi
-])
-
-dnl
-dnl Check for size_t declation
-dnl
-AC_DEFUN([SUDO_TYPE_SIZE_T],
-[SUDO_CHECK_TYPE(size_t, int)])
-
-dnl
-dnl Check for ssize_t declation
-dnl
-AC_DEFUN([SUDO_TYPE_SSIZE_T],
-[SUDO_CHECK_TYPE(ssize_t, int)])
-
-dnl
-dnl Check for dev_t declation
-dnl
-AC_DEFUN([SUDO_TYPE_DEV_T],
-[SUDO_CHECK_TYPE(dev_t, int)])
-
-dnl
-dnl Check for ino_t declation
-dnl
-AC_DEFUN([SUDO_TYPE_INO_T],
-[SUDO_CHECK_TYPE(ino_t, unsigned int)])
-
-dnl
 dnl check for working fnmatch(3)
 dnl
 AC_DEFUN([SUDO_FUNC_FNMATCH],
@@ -231,6 +185,28 @@ AC_DEFUN([SUDO_FUNC_ISBLANK],
   fi
 ])
 
+AC_DEFUN([SUDO_CHECK_LIB], [
+    _sudo_check_lib_extras=`echo "$5"|sed -e 's/[ 	]*//g' -e 's/-l/_/g'`
+    AC_MSG_CHECKING([for $2 in -l$1${5+ }$5])
+    AC_CACHE_VAL([sudo_cv_lib_$1''_$2$_sudo_check_lib_extras], [
+	SUDO_CHECK_LIB_OLIBS="$LIBS"
+	LIBS="$LIBS -l$1${5+ }$5"
+	AC_LINK_IFELSE(
+	    [AC_LANG_CALL([], [$2])],
+	    [eval sudo_cv_lib_$1''_$2$_sudo_check_lib_extras=yes],
+	    [eval sudo_cv_lib_$1''_$2$_sudo_check_lib_extras=no]
+	)
+	LIBS="$SUDO_CHECK_LIB_OLIBS"
+    ])
+    if eval test \$sudo_cv_lib_$1''_$2$_sudo_check_lib_extras = "yes"; then
+	AC_MSG_RESULT([yes])
+	$3
+    else
+	AC_MSG_RESULT([no])
+	$4
+    fi
+])
+
 dnl
 dnl check unsetenv() return value
 dnl
@@ -253,11 +229,29 @@ AC_DEFUN([SUDO_FUNC_UNSETENV_VOID],
   ])
 
 dnl
+dnl check putenv() argument for const
+dnl
+AC_DEFUN([SUDO_FUNC_PUTENV_CONST],
+[AC_CACHE_CHECK([whether putenv takes a const argument],
+sudo_cv_func_putenv_const,
+[AC_COMPILE_IFELSE([AC_LANG_PROGRAM([AC_INCLUDES_DEFAULT
+int putenv(const char *string) {return 0;}], [])],
+    [sudo_cv_func_putenv_const=yes],
+    [sudo_cv_func_putenv_const=no])
+  ])
+  if test $sudo_cv_func_putenv_const = yes; then
+    AC_DEFINE(PUTENV_CONST, const, [Define to const if the `putenv' takes a const argument.])
+  else
+    AC_DEFINE(PUTENV_CONST, [])
+  fi
+])
+
+dnl
 dnl check for sa_len field in struct sockaddr
 dnl
 AC_DEFUN([SUDO_SOCK_SA_LEN], [
     AC_CHECK_MEMBER([struct sockaddr.sa_len], 
-	[AC_DEFINE(HAVE_SA_LEN, 1, [Define if your struct sockadr has an sa_len field.])],    
+	[AC_DEFINE(HAVE_STRUCT_SOCKADDR_SA_LEN, 1, [Define if your struct sockadr has an sa_len field.])],    
 	[],
 	[ #include <sys/types.h>
 	  #include <sys/socket.h>] 
@@ -375,3 +369,8 @@ m4_include([ltoptions.m4])
 m4_include([ltsugar.m4])
 m4_include([ltversion.m4])
 m4_include([lt~obsolete.m4])
+dnl
+dnl Pull in other non-standard macros
+dnl
+m4_include([ax_check_compile_flag.m4])
+m4_include([ax_check_link_flag.m4])

@@ -61,6 +61,7 @@ set_interfaces(const char *ai)
 {
     char *addrinfo, *addr, *mask;
     struct interface *ifp;
+    debug_decl(set_interfaces, SUDO_DEBUG_NETIF)
 
     addrinfo = estrdup(ai);
     for (addr = strtok(addrinfo, " \t"); addr != NULL; addr = strtok(NULL, " \t")) {
@@ -70,10 +71,10 @@ set_interfaces(const char *ai)
 	*mask++ = '\0';
 
 	/* Parse addr and store in list. */
-	ifp = emalloc(sizeof(*ifp));
+	ifp = ecalloc(1, sizeof(*ifp));
 	if (strchr(addr, ':')) {
 	    /* IPv6 */
-#ifdef HAVE_IN6_ADDR
+#ifdef HAVE_STRUCT_IN6_ADDR
 	    ifp->family = AF_INET6;
 	    if (inet_pton(AF_INET6, addr, &ifp->addr.ip6) != 1 ||
 		inet_pton(AF_INET6, mask, &ifp->netmask.ip6) != 1)
@@ -97,12 +98,14 @@ set_interfaces(const char *ai)
 	interfaces = ifp;
     }
     efree(addrinfo);
+    debug_return;
 }
 
 void
 dump_interfaces(const char *ai)
 {
     char *cp, *addrinfo;
+    debug_decl(set_interfaces, SUDO_DEBUG_NETIF)
 
     addrinfo = estrdup(ai);
 
@@ -111,4 +114,5 @@ dump_interfaces(const char *ai)
 	sudo_printf(SUDO_CONV_INFO_MSG, "\t%s\n", cp);
 
     efree(addrinfo);
+    debug_return;
 }

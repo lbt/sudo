@@ -46,18 +46,19 @@
 
 struct path_escape {
     const char *name;
-    size_t (*copy_fn)(char *, size_t);
+    size_t (*copy_fn)(char *, size_t, char *);
 };
 
-static size_t fill_seq(char *, size_t);
-static size_t fill_user(char *, size_t);
-static size_t fill_group(char *, size_t);
-static size_t fill_runas_user(char *, size_t);
-static size_t fill_runas_group(char *, size_t);
-static size_t fill_hostname(char *, size_t);
-static size_t fill_command(char *, size_t);
+static size_t fill_seq(char *, size_t, char *);
+static size_t fill_user(char *, size_t, char *);
+static size_t fill_group(char *, size_t, char *);
+static size_t fill_runas_user(char *, size_t, char *);
+static size_t fill_runas_group(char *, size_t, char *);
+static size_t fill_hostname(char *, size_t, char *);
+static size_t fill_command(char *, size_t, char *);
 
-static struct path_escape escapes[] = {
+/* Note: "seq" must be first in the list. */
+static struct path_escape io_path_escapes[] = {
     { "seq", fill_seq },
     { "user", fill_user },
     { "group", fill_group },
@@ -69,146 +70,168 @@ static struct path_escape escapes[] = {
 };
 
 static size_t
-fill_seq(char *str, size_t strsize)
+fill_seq(char *str, size_t strsize, char *logdir)
 {
     static char sessid[7];
     int len;
+    debug_decl(sudoers_io_version, SUDO_DEBUG_UTIL)
 
     if (sessid[0] == '\0')
-	io_nextid(def_iolog_dir, sessid);
+	io_nextid(logdir, def_iolog_dir, sessid);
 
     /* Path is of the form /var/log/sudo-io/00/00/01. */
     len = snprintf(str, strsize, "%c%c/%c%c/%c%c", sessid[0],
 	sessid[1], sessid[2], sessid[3], sessid[4], sessid[5]);
     if (len < 0)
-	return strsize;	/* handle non-standard snprintf() */
-    return (size_t)len;
+	debug_return_size_t(strsize); /* handle non-standard snprintf() */
+    debug_return_size_t(len);
 }
 
 static size_t
-fill_user(char *str, size_t strsize)
+fill_user(char *str, size_t strsize, char *unused)
 {
-    return strlcpy(str, user_name, strsize);
+    debug_decl(fill_user, SUDO_DEBUG_UTIL)
+    debug_return_size_t(strlcpy(str, user_name, strsize));
 }
 
 static size_t
-fill_group(char *str, size_t strsize)
+fill_group(char *str, size_t strsize, char *unused)
 {
     struct group *grp;
     size_t len;
+    debug_decl(fill_group, SUDO_DEBUG_UTIL)
 
     if ((grp = sudo_getgrgid(user_gid)) != NULL) {
 	len = strlcpy(str, grp->gr_name, strsize);
-	gr_delref(grp);
+	sudo_gr_delref(grp);
     } else {
 	len = strlen(str);
 	len = snprintf(str + len, strsize - len, "#%u",
 	    (unsigned int) user_gid);
     }
-    return len;
+    debug_return_size_t(len);
 }
 
 static size_t
-fill_runas_user(char *str, size_t strsize)
+fill_runas_user(char *str, size_t strsize, char *unused)
 {
-    return strlcpy(str, runas_pw->pw_name, strsize);
+    debug_decl(fill_runas_user, SUDO_DEBUG_UTIL)
+    debug_return_size_t(strlcpy(str, runas_pw->pw_name, strsize));
 }
 
 static size_t
-fill_runas_group(char *str, size_t strsize)
+fill_runas_group(char *str, size_t strsize, char *unused)
 {
     struct group *grp;
     size_t len;
+    debug_decl(fill_runas_group, SUDO_DEBUG_UTIL)
 
     if (runas_gr != NULL) {
 	len = strlcpy(str, runas_gr->gr_name, strsize);
     } else {
 	if ((grp = sudo_getgrgid(runas_pw->pw_gid)) != NULL) {
 	    len = strlcpy(str, grp->gr_name, strsize);
-	    gr_delref(grp);
+	    sudo_gr_delref(grp);
 	} else {
 	    len = strlen(str);
 	    len = snprintf(str + len, strsize - len, "#%u",
 		(unsigned int) runas_pw->pw_gid);
 	}
     }
-    return len;
+    debug_return_size_t(len);
 }
 
 static size_t
-fill_hostname(char *str, size_t strsize)
+fill_hostname(char *str, size_t strsize, char *unused)
 {
-    return strlcpy(str, user_shost, strsize);
+    debug_decl(fill_hostname, SUDO_DEBUG_UTIL)
+    debug_return_size_t(strlcpy(str, user_shost, strsize));
 }
 
 static size_t
-fill_command(char *str, size_t strsize)
+fill_command(char *str, size_t strsize, char *unused)
 {
-    return strlcpy(str, user_base, strsize);
+    debug_decl(fill_command, SUDO_DEBUG_UTIL)
+    debug_return_size_t(strlcpy(str, user_base, strsize));
 }
 
+/*
+ * Concatenate dir + file, expanding any escape sequences.
+ * Returns the concatenated path and sets slashp point to
+ * the path separator between the expanded dir and file.
+ */
 char *
 expand_iolog_path(const char *prefix, const char *dir, const char *file,
     char **slashp)
 {
-    size_t plen = 0, psize = 1024;
-    char *path, *dst;
-    const char *src = dir, *ep;
-    int pass, strfit = FALSE;
+    size_t len, prelen = 0;
+    char *dst, *dst0, *path, *pathend, tmpbuf[PATH_MAX];
+    char *slash = NULL;
+    const char *endbrace, *src = dir;
+    static struct path_escape *escapes;
+    int pass;
+    bool strfit;
+    debug_decl(expand_iolog_path, SUDO_DEBUG_UTIL)
 
-    /* Concatenate dir + file -> path, expanding any escape sequences. */
-    dst = path = emalloc(psize);
+    /* Expanded path must be <= PATH_MAX */
+    if (prefix != NULL)
+	prelen = strlen(prefix);
+    dst = path = emalloc(prelen + PATH_MAX);
     *path = '\0';
+    pathend = path + prelen + PATH_MAX;
+
+    /* Copy prefix, if present. */
+    if (prefix != NULL) {
+	memcpy(path, prefix, prelen);
+	dst += prelen;
+	*dst = '\0';
+    }
 
     /* Trim leading slashes from file component. */
     while (*file == '/')
 	file++;
 
-    if (prefix != NULL) {
-	plen = strlcpy(path, prefix, psize);
-	dst += plen;
-    }
     for (pass = 0; pass < 3; pass++) {
+	strfit = false;
 	switch (pass) {
 	case 0:
 	    src = dir;
+	    escapes = io_path_escapes + 1; /* skip "${seq}" */
 	    break;
 	case 1:
 	    /* Trim trailing slashes from dir component. */
-	    while (dst > path && dst[-1] == '/')
+	    while (dst - path - 1 > prelen && dst[-1] == '/')
 		dst--;
-	    if (slashp)
-		*slashp = dst;
-	    src = "/";
-	    break;
+	    /* The NUL will be replaced with a '/' at the end. */
+	    if (dst + 1 >= pathend)
+		goto bad;
+	    slash = dst++;
+	    continue;
 	case 2:
 	    src = file;
+	    escapes = io_path_escapes;
 	    break;
 	}
+	dst0 = dst;
 	for (; *src != '\0'; src++) {
 	    if (src[0] == '%') {
 		if (src[1] == '{') {
-		    ep = strchr(src + 2, '}');
-		    if (ep != NULL) {
+		    endbrace = strchr(src + 2, '}');
+		    if (endbrace != NULL) {
 			struct path_escape *esc;
-			size_t len = (size_t)(ep - src - 2);
+			len = (size_t)(endbrace - src - 2);
 			for (esc = escapes; esc->name != NULL; esc++) {
 			    if (strncmp(src + 2, esc->name, len) == 0 &&
 				esc->name[len] == '\0')
 				break;
 			}
 			if (esc->name != NULL) {
-			    for (;;) {
-				len = esc->copy_fn(dst, psize - (dst - path));
-				if (len < psize - (dst - path))
-				    break;
-				path = erealloc3(path, 2, psize);
-				psize *= 2;
-				dst = path + plen;
-			    }
+			    len = esc->copy_fn(dst, (size_t)(pathend - dst),
+				path + prelen);
+			    if (len >= (size_t)(pathend - dst))
+				goto bad;
 			    dst += len;
-			    plen += len;
-			    src = ep;
+			    src = endbrace;
 			    continue;
 			}
 		    }
@@ -221,46 +244,50 @@ expand_iolog_path(const char *prefix, const char *dir, const char *file,
 		}
 	    }
 	    /* Need at least 2 chars, including the NUL terminator. */
-	    if (plen + 2 >= psize) {
-		path = erealloc3(path, 2, psize);
-		psize *= 2;
-		dst = path + plen;
-	    }
+	    if (dst + 1 >= pathend)
+		goto bad;
 	    *dst++ = *src;
-	    plen++;
 	}
-    }
-    *dst = '\0';
+	*dst = '\0';
 
-    if (strfit) {
-	time_t now;
-	struct tm *timeptr;
-	char *buf = NULL;
+	/* Expand strftime escapes as needed. */
+	if (strfit) {
+	    time_t now;
+	    struct tm *timeptr;
 
-	time(&now);
-	timeptr = localtime(&now);
+	    time(&now);
+	    timeptr = localtime(&now);
 
 #ifdef HAVE_SETLOCALE
-	if (!setlocale(LC_ALL, def_sudoers_locale)) {
-	    warningx(_("unable to set locale to \"%s\", using \"C\""),
-		def_sudoers_locale);
-	    setlocale(LC_ALL, "C");
-	}
+	    if (!setlocale(LC_ALL, def_sudoers_locale)) {
+		warningx(_("unable to set locale to \"%s\", using \"C\""),
+		    def_sudoers_locale);
+		setlocale(LC_ALL, "C");
+	    }
 #endif
-	/* Double the size of the buffer until it is big enough to expand. */
-	do {
-	    psize *= 2;
-	    buf = erealloc(buf, psize);
-	    buf[psize - 1] = '\0';
-	} while (!strftime(buf, psize, path, timeptr) || buf[psize - 1] != '\0');
-#ifdef HAVE_SETLOCALE
-	setlocale(LC_ALL, "");
-#endif
-	if (slashp)
-	    *slashp = buf + (*slashp - path);
-	efree(path);
-	path = buf;
-    }
+	    /* We only calls strftime() on the current part of the buffer. */
+	    tmpbuf[sizeof(tmpbuf) - 1] = '\0';
+	    len = strftime(tmpbuf, sizeof(tmpbuf), dst0, timeptr);
 
-    return path;
+#ifdef HAVE_SETLOCALE
+	    setlocale(LC_ALL, "");
+#endif
+	    if (len == 0 || tmpbuf[sizeof(tmpbuf) - 1] != '\0')
+		goto bad;		/* strftime() failed, buf too small? */
+
+	    if (len >= (size_t)(pathend - dst0))
+		goto bad;		/* expanded buffer too big to fit. */
+	    memcpy(dst0, tmpbuf, len);
+	    dst = dst0 + len;
+	    *dst = '\0';
+	}
+    }
+    if (slashp)
+	*slashp = slash;
+    *slash = '/';
+
+    debug_return_str(path);
+bad:
+    efree(path);
+    debug_return_str(NULL);
 }

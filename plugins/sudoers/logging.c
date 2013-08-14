@@ -73,6 +73,8 @@ static char *new_logline(const char *, int);
 
 extern sigjmp_buf error_jmp;
 
+extern char **NewArgv; /* XXX - for auditing */
+
 #define MAXSYSLOGTRIES	16	/* num of retries for broken syslogs */
 
 /*
@@ -91,6 +93,7 @@ mysyslog(int pri, const char *fmt, ...)
 #endif
     char buf[MAXSYSLOGLEN+1];
     va_list ap;
+    debug_decl(mysyslog, SUDO_DEBUG_LOGGING)
 
     va_start(ap, fmt);
 #ifdef LOG_NFACILITIES
@@ -113,6 +116,7 @@ mysyslog(int pri, const char *fmt, ...)
 #endif /* BROKEN_SYSLOG */
     va_end(ap);
     closelog();
+    debug_return;
 }
 
 #define FMT_FIRST "%8s : %s"
@@ -128,9 +132,12 @@ do_syslog(int pri, char *msg)
     size_t len, maxlen;
     char *p, *tmp, save;
     const char *fmt;
-
 #ifdef HAVE_SETLOCALE
     const char *old_locale = estrdup(setlocale(LC_ALL, NULL));
+#endif
+    debug_decl(do_syslog, SUDO_DEBUG_LOGGING)
+
+#ifdef HAVE_SETLOCALE
     if (!setlocale(LC_ALL, def_sudoers_locale))
 	setlocale(LC_ALL, "C");
 #endif /* HAVE_SETLOCALE */
@@ -174,6 +181,8 @@ do_syslog(int pri, char *msg)
     setlocale(LC_ALL, old_locale);
     efree((void *)old_locale);
 #endif /* HAVE_SETLOCALE */
+
+    debug_return;
 }
 
 static void
@@ -184,6 +193,7 @@ do_logfile(char *msg)
     mode_t oldmask;
     time_t now;
     FILE *fp;
+    debug_decl(do_logfile, SUDO_DEBUG_LOGGING)
 
     oldmask = umask(077);
     fp = fopen(def_logfile, "a");
@@ -233,16 +243,17 @@ do_logfile(char *msg)
 	efree((void *)old_locale);
 #endif /* HAVE_SETLOCALE */
     }
+    debug_return;
 }
 
 /*
  * Log and mail the denial message, optionally informing the user.
  */
-void
-log_denial(int status, int inform_user)
+static void
+log_denial(int status, bool inform_user)
 {
-    char *message;
-    char *logline;
+    char *logline, *message;
+    debug_decl(log_denial, SUDO_DEBUG_LOGGING)
 
     /* Set error message. */
     if (ISSET(status, FLAG_NO_USER))
@@ -289,6 +300,88 @@ log_denial(int status, int inform_user)
 	do_logfile(logline);
 
     efree(logline);
+    debug_return;
+}
+
+/*
+ * Log and audit that user was not allowed to run the command.
+ */
+void
+log_failure(int status, int flags)
+{
+    debug_decl(log_failure, SUDO_DEBUG_LOGGING)
+    bool inform_user = true;
+
+    /* Handle auditing first. */
+    if (ISSET(status, FLAG_NO_USER | FLAG_NO_HOST))
+	audit_failure(NewArgv, _("No user or host"));
+    else
+	audit_failure(NewArgv, _("validation failure"));
+
+    /* The user doesn't always get to see the log message (path info). */
+    if (!ISSET(status, FLAG_NO_USER | FLAG_NO_HOST) && def_path_info &&
+	(flags == NOT_FOUND_DOT || flags == NOT_FOUND))
+	inform_user = false;
+    log_denial(status, inform_user);
+
+    if (!inform_user) {
+	/*
+	 * We'd like to not leak path info at all here, but that can
+	 * *really* confuse the users.  To really close the leak we'd
+	 * have to say "not allowed to run foo" even when the problem
+	 * is just "no foo in path" since the user can trivially set
+	 * their path to just contain a single dir.
+	 */
+	if (flags == NOT_FOUND)
+	    warningx(_("%s: command not found"), user_cmnd);
+	else if (flags == NOT_FOUND_DOT)
+	    warningx(_("ignoring `%s' found in '.'\nUse `sudo ./%s' if this is the `%s' you wish to run."), user_cmnd, user_cmnd, user_cmnd);
+    }
+
+    debug_return;
+}
+
+/*
+ * Log and audit that user was not able to authenticate themselves.
+ */
+void
+log_auth_failure(int status, int tries)
+{
+    int flags = NO_MAIL;
+    debug_decl(log_auth_failure, SUDO_DEBUG_LOGGING)
+
+    /* Handle auditing first. */
+    audit_failure(NewArgv, _("authentication failure"));
+
+    /*
+     * Do we need to send mail?
+     * We want to avoid sending multiple messages for the same command
+     * so if we are going to send an email about the denial, that takes
+     * precedence.
+     */
+    if (ISSET(status, VALIDATE_OK)) {
+	/* Command allowed, auth failed; do we need to send mail? */
+	if (def_mail_badpass || def_mail_always)
+	    flags = 0;
+    } else {
+	/* Command denied, auth failed; make sure we don't send mail twice. */
+	if (def_mail_badpass && !should_mail(status))
+	    flags = 0;
+	/* Don't log the bad password message, we'll log a denial instead. */
+	flags |= NO_LOG;
+    }
+
+    /*
+     * If sudoers denied the command we'll log that separately.
+     */
+    if (ISSET(status, FLAG_BAD_PASSWORD)) {
+	log_error(flags, ngettext("%d incorrect password attempt",
+	    "%d incorrect password attempts", tries), tries);
+    } else if (ISSET(status, FLAG_NON_INTERACTIVE)) {
+	log_error(flags, _("a password is required"));
+    }
+
+    debug_return;
 }
 
 /*
@@ -298,6 +391,7 @@ void
 log_allowed(int status)
 {
     char *logline;
+    debug_decl(log_allowed, SUDO_DEBUG_LOGGING)
 
     logline = new_logline(NULL, 0);
 
@@ -313,20 +407,21 @@ log_allowed(int status)
 	do_logfile(logline);
 
     efree(logline);
+    debug_return;
 }
 
-void
-log_error(int flags, const char *fmt, ...)
+/*
+ * Perform logging for log_error()/log_fatal()
+ */
+static void
+vlog_error(int flags, const char *fmt, va_list ap)
 {
     int serrno = errno;
-    char *message;
-    char *logline;
-    va_list ap;
+    char *logline, *message;
+    debug_decl(vlog_error, SUDO_DEBUG_LOGGING)
 
     /* Expand printf-style format + args. */
-    va_start(ap, fmt);
     evasprintf(&message, fmt, ap);
-    va_end(ap);
 
     /* Become root if we are not already to avoid user interference */
     set_perms(PERM_ROOT|PERM_NOEXIT);
@@ -357,19 +452,49 @@ log_error(int flags, const char *fmt, ...)
     /*
      * Log to syslog and/or a file.
      */
-    if (def_syslog)
-	do_syslog(def_syslog_badpri, logline);
-    if (def_logfile)
-	do_logfile(logline);
+    if (!ISSET(flags, NO_LOG)) {
+	if (def_syslog)
+	    do_syslog(def_syslog_badpri, logline);
+	if (def_logfile)
+	    do_logfile(logline);
+    }
 
     efree(logline);
 
     restore_perms();
 
-    if (!ISSET(flags, NO_EXIT)) {
-	plugin_cleanup(0);
-	siglongjmp(error_jmp, 1);
-    }
+    debug_return;
+}
+
+void
+log_error(int flags, const char *fmt, ...)
+{
+    va_list ap;
+    debug_decl(log_error, SUDO_DEBUG_LOGGING)
+
+    /* Log the error. */
+    va_start(ap, fmt);
+    vlog_error(flags, fmt, ap);
+    va_end(ap);
+
+    debug_return;
+}
+
+void
+log_fatal(int flags, const char *fmt, ...)
+{
+    va_list ap;
+    debug_decl(log_error, SUDO_DEBUG_LOGGING)
+
+    /* Log the error. */
+    va_start(ap, fmt);
+    vlog_error(flags, fmt, ap);
+    va_end(ap);
+
+    /* Exit the plugin. */
+    plugin_cleanup(0);
+    sudo_debug_exit(__func__, __FILE__, __LINE__, sudo_debug_subsys);
+    siglongjmp(error_jmp, 1);
 }
 
 #define MAX_MAILFLAGS	63
@@ -396,13 +521,14 @@ send_mail(const char *fmt, ...)
 	NULL
     };
 #endif /* NO_ROOT_MAILER */
+    debug_decl(send_mail, SUDO_DEBUG_LOGGING)
 
     /* Just return if mailer is disabled. */
     if (!def_mailerpath || !def_mailto)
-	return;
+	debug_return;
 
     /* Fork and return, child will daemonize. */
-    switch (pid = fork()) {
+    switch (pid = sudo_debug_fork()) {
 	case -1:
 	    /* Error. */
 	    error(1, _("unable to fork"));
@@ -413,6 +539,8 @@ send_mail(const char *fmt, ...)
 		case -1:
 		    /* Error. */
 		    mysyslog(LOG_ERR, _("unable to fork: %m"));
+		    sudo_debug_printf(SUDO_DEBUG_ERROR, "unable to fork: %s",
+			strerror(errno));
 		    _exit(1);
 		case 0:
 		    /* Grandchild continues below. */
@@ -427,7 +555,7 @@ send_mail(const char *fmt, ...)
 	    do {
 		rv = waitpid(pid, &status, 0);
 	    } while (rv == -1 && errno == EINTR);
-	    return;
+	    return; /* not debug */
     }
 
     /* Daemonize - disassociate from session/tty. */
@@ -463,13 +591,19 @@ send_mail(const char *fmt, ...)
 
     if (pipe(pfd) == -1) {
 	mysyslog(LOG_ERR, _("unable to open pipe: %m"));
+	sudo_debug_printf(SUDO_DEBUG_ERROR, "unable to open pipe: %s",
+	    strerror(errno));
+	sudo_debug_exit(__func__, __FILE__, __LINE__, sudo_debug_subsys);
 	_exit(1);
     }
 
-    switch (pid = fork()) {
+    switch (pid = sudo_debug_fork()) {
 	case -1:
 	    /* Error. */
 	    mysyslog(LOG_ERR, _("unable to fork: %m"));
+	    sudo_debug_printf(SUDO_DEBUG_ERROR, "unable to fork: %s",
+		strerror(errno));
+	    sudo_debug_exit(__func__, __FILE__, __LINE__, sudo_debug_subsys);
 	    _exit(1);
 	    break;
 	case 0:
@@ -482,6 +616,8 @@ send_mail(const char *fmt, ...)
 		if (pfd[0] != STDIN_FILENO) {
 		    if (dup2(pfd[0], STDIN_FILENO) == -1) {
 			mysyslog(LOG_ERR, _("unable to dup stdin: %m"));
+			sudo_debug_printf(SUDO_DEBUG_ERROR,
+			    "unable to dup stdin: %s", strerror(errno));
 			_exit(127);
 		    }
 		    (void) close(pfd[0]);
@@ -516,6 +652,8 @@ send_mail(const char *fmt, ...)
 		execv(mpath, argv);
 #endif /* NO_ROOT_MAILER */
 		mysyslog(LOG_ERR, _("unable to execute %s: %m"), mpath);
+		sudo_debug_printf(SUDO_DEBUG_ERROR, "unable to execute %s: %s",
+		    mpath, strerror(errno));
 		_exit(127);
 	    }
 	    break;
@@ -561,6 +699,7 @@ send_mail(const char *fmt, ...)
     do {
         rv = waitpid(pid, &status, 0);
     } while (rv == -1 && errno == EINTR);
+    sudo_debug_exit(__func__, __FILE__, __LINE__, sudo_debug_subsys);
     _exit(0);
 }
 
@@ -570,11 +709,12 @@ send_mail(const char *fmt, ...)
 static int
 should_mail(int status)
 {
+    debug_decl(should_mail, SUDO_DEBUG_LOGGING)
 
-    return def_mail_always || ISSET(status, VALIDATE_ERROR) ||
+    debug_return_bool(def_mail_always || ISSET(status, VALIDATE_ERROR) ||
 	(def_mail_no_user && ISSET(status, FLAG_NO_USER)) ||
 	(def_mail_no_host && ISSET(status, FLAG_NO_HOST)) ||
-	(def_mail_no_perms && !ISSET(status, VALIDATE_OK));
+	(def_mail_no_perms && !ISSET(status, VALIDATE_OK)));
 }
 
 #define	LL_TTY_STR	"TTY="
@@ -603,6 +743,7 @@ new_logline(const char *message, int serrno)
     char *errstr = NULL;
     char *evstr = NULL;
     char *line, sessid[7], *tsid = NULL;
+    debug_decl(new_logline, SUDO_DEBUG_LOGGING)
 
     /* A TSID may be a sudoers-style session ID or a free-form string. */
     if (sudo_user.iolog_file != NULL) {
@@ -723,7 +864,7 @@ new_logline(const char *message, int serrno)
 	}
     }
 
-    return line;
+    debug_return_str(line);
 toobig:
     errorx(1, _("internal error: insufficient space for log line"));
 }

@@ -122,7 +122,7 @@ typedef union {
     enum _MERIDIAN	Meridian;
 } YYSTYPE;
 #endif /* YYSTYPE_DEFINED */
-#line 125 "y.tab.c"
+#line 125 "getdate.c"
 #define tAGO 257
 #define tDAY 258
 #define tDAYZONE 259
@@ -1028,7 +1028,7 @@ main(ac, av)
     /* NOTREACHED */
 }
 #endif	/* defined(TEST) */
-#line 979 "y.tab.c"
+#line 979 "getdate.c"
 /* allocate initial stack or double stack size, up to YYMAXDEPTH */
 #if defined(__cplusplus) || defined(__STDC__)
 static int yygrowstack(void)
@@ -1052,7 +1052,7 @@ static int yygrowstack()
 #else
 #define YY_SIZE_MAX 0x7fffffff
 #endif
-    if (newsize && YY_SIZE_MAX / newsize < sizeof *newss)
+    if (!newsize || YY_SIZE_MAX / newsize < sizeof *newss)
         goto bail;
     newss = yyss ? (short *)realloc(yyss, newsize * sizeof *newss) :
       (short *)malloc(newsize * sizeof *newss); /* overflow check above */
@@ -1060,7 +1060,7 @@ static int yygrowstack()
         goto bail;
     yyss = newss;
     yyssp = newss + i;
-    if (newsize && YY_SIZE_MAX / newsize < sizeof *newvs)
+    if (!newsize || YY_SIZE_MAX / newsize < sizeof *newvs)
         goto bail;
     newvs = yyvs ? (YYSTYPE *)realloc(yyvs, newsize * sizeof *newvs) :
       (YYSTYPE *)malloc(newsize * sizeof *newvs); /* overflow check above */
@@ -1523,7 +1523,7 @@ case 41:
 	    yyval.Meridian = yyvsp[0].Meridian;
 	}
 break;
-#line 1474 "y.tab.c"
+#line 1474 "getdate.c"
     }
     yyssp -= yym;
     yystate = *yyssp;

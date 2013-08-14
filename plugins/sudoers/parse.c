@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2005, 2007-2011 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2004-2005, 2007-2012 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -70,7 +70,8 @@ struct sudo_nss sudo_nss_file = {
  */
 extern FILE *yyin;
 extern char *errorfile;
-extern int errorlineno, parse_error;
+extern int errorlineno;
+extern bool parse_error;
 
 /*
  * Local prototypes.
@@ -81,23 +82,27 @@ static int display_bound_defaults(int, struct lbuf *);
 int
 sudo_file_open(struct sudo_nss *nss)
 {
+    debug_decl(sudo_file_open, SUDO_DEBUG_NSS)
+
     if (def_ignore_local_sudoers)
-	return -1;
-    nss->handle = open_sudoers(sudoers_file, FALSE, NULL);
-    return nss->handle ? 0 : -1;
+	debug_return_int(-1);
+    nss->handle = open_sudoers(sudoers_file, false, NULL);
+    debug_return_int(nss->handle ? 0 : -1);
 }
 
 int
 sudo_file_close(struct sudo_nss *nss)
 {
+    debug_decl(sudo_file_close, SUDO_DEBUG_NSS)
+
     /* Free parser data structures and close sudoers file. */
-    init_parser(NULL, 0);
+    init_parser(NULL, false);
     if (nss->handle != NULL) {
 	fclose(nss->handle);
 	nss->handle = NULL;
 	yyin = NULL;
     }
-    return 0;
+    debug_return_int(0);
 }
 
 /*
@@ -106,17 +111,23 @@ sudo_file_close(struct sudo_nss *nss)
 int
 sudo_file_parse(struct sudo_nss *nss)
 {
-    if (nss->handle == NULL)
-	return -1;
+    debug_decl(sudo_file_close, SUDO_DEBUG_NSS)
 
-    init_parser(sudoers_file, 0);
+    if (nss->handle == NULL)
+	debug_return_int(-1);
+
+    init_parser(sudoers_file, false);
     yyin = nss->handle;
     if (yyparse() != 0 || parse_error) {
-	log_error(NO_EXIT, _("parse error in %s near line %d"),
-	    errorfile, errorlineno);
-	return -1;
+	if (errorlineno != -1) {
+	    log_error(0, _("parse error in %s near line %d"),
+		errorfile, errorlineno);
+	} else {
+	    log_error(0, _("parse error in %s"), errorfile);
+	}
+	debug_return_int(-1);
     }
-    return 0;
+    debug_return_int(0);
 }
 
 /*
@@ -125,12 +136,14 @@ sudo_file_parse(struct sudo_nss *nss)
 int
 sudo_file_setdefs(struct sudo_nss *nss)
 {
+    debug_decl(sudo_file_setdefs, SUDO_DEBUG_NSS)
+
     if (nss->handle == NULL)
-	return -1;
+	debug_return_int(-1);
 
     if (!update_defaults(SETDEF_GENERIC|SETDEF_HOST|SETDEF_USER))
-	return -1;
-    return 0;
+	debug_return_int(-1);
+    debug_return_int(0);
 }
 
 /*
@@ -145,9 +158,11 @@ sudo_file_lookup(struct sudo_nss *nss, int validated, int pwflag)
     struct cmndtag *tags = NULL;
     struct privilege *priv;
     struct userspec *us;
+    struct member *matching_user;
+    debug_decl(sudo_file_lookup, SUDO_DEBUG_NSS)
 
     if (nss->handle == NULL)
-	return validated;
+	debug_return_int(validated);
 
     /*
      * Only check the actual command if pwflag is not set.
@@ -159,7 +174,7 @@ sudo_file_lookup(struct sudo_nss *nss, int validated, int pwflag)
 	enum def_tuple pwcheck;
 
 	pwcheck = (pwflag == -1) ? never : sudo_defs_table[pwflag].sd_un.tuple;
-	nopass = (pwcheck == all) ? TRUE : FALSE;
+	nopass = (pwcheck == all) ? true : false;
 
 	if (list_pw == NULL)
 	    SET(validated, FLAG_NO_CHECK);
@@ -178,8 +193,8 @@ sudo_file_lookup(struct sudo_nss *nss, int validated, int pwflag)
 			user_uid == list_pw->pw_uid ||
 			cmnd_matches(cs->cmnd) == ALLOW)
 			    match = ALLOW;
-		    if ((pwcheck == any && cs->tags.nopasswd == TRUE) ||
-			(pwcheck == all && cs->tags.nopasswd != TRUE))
+		    if ((pwcheck == any && cs->tags.nopasswd == true) ||
+			(pwcheck == all && cs->tags.nopasswd != true))
 			nopass = cs->tags.nopasswd;
 		}
 	    }
@@ -191,9 +206,9 @@ sudo_file_lookup(struct sudo_nss *nss, int validated, int pwflag)
 	    SET(validated, VALIDATE_NOT_OK);
 	if (pwcheck == always && def_authenticate)
 	    SET(validated, FLAG_CHECK_USER);
-	else if (pwcheck == never || nopass == TRUE)
-	    def_authenticate = FALSE;
-	return validated;
+	else if (pwcheck == never || nopass == true)
+	    def_authenticate = false;
+	debug_return_int(validated);
     }
 
     /* Need to be runas user while stat'ing things. */
@@ -211,8 +226,9 @@ sudo_file_lookup(struct sudo_nss *nss, int validated, int pwflag)
 	    else
 		continue;
 	    tq_foreach_rev(&priv->cmndlist, cs) {
+		matching_user = NULL;
 		runas_match = runaslist_matches(&cs->runasuserlist,
-		    &cs->runasgrouplist);
+		    &cs->runasgrouplist, &matching_user, NULL);
 		if (runas_match == ALLOW) {
 		    cmnd_match = cmnd_matches(cs->cmnd);
 		    if (cmnd_match != UNSPEC) {
@@ -225,6 +241,23 @@ sudo_file_lookup(struct sudo_nss *nss, int validated, int pwflag)
 			if (user_type == NULL)
 			    user_type = cs->type ? estrdup(cs->type) : def_type;
 #endif /* HAVE_SELINUX */
+#ifdef HAVE_PRIV_SET
+			/* Set Solaris privilege sets */
+			if (runas_privs == NULL)
+			    runas_privs = cs->privs ? estrdup(cs->privs) : def_privs;
+			if (runas_limitprivs == NULL)
+			    runas_limitprivs = cs->limitprivs ? estrdup(cs->limitprivs) : def_limitprivs;
+#endif /* HAVE_PRIV_SET */
+			/*
+			 * If user is running command as himself,
+			 * set runas_pw = sudo_user.pw.
+			 * XXX - hack, want more general solution
+			 */
+			if (matching_user && matching_user->type == MYSELF) {
+			    sudo_pw_delref(runas_pw);
+			    sudo_pw_addref(sudo_user.pw);
+			    runas_pw = sudo_user.pw;
+			}
 			goto matched2;
 		    }
 		}
@@ -250,9 +283,11 @@ sudo_file_lookup(struct sudo_nss *nss, int validated, int pwflag)
     } else if (match == DENY) {
 	SET(validated, VALIDATE_NOT_OK);
 	CLR(validated, VALIDATE_OK);
+	if (tags != NULL && tags->nopasswd != UNSPEC)
+	    def_authenticate = !tags->nopasswd;
     }
     restore_perms();
-    return validated;
+    debug_return_int(validated);
 }
 
 #define	TAG_CHANGED(t) \
@@ -263,7 +298,14 @@ sudo_file_append_cmnd(struct cmndspec *cs, struct cmndtag *tags,
     struct lbuf *lbuf)
 {
     struct member *m;
+    debug_decl(sudo_file_append_cmnd, SUDO_DEBUG_NSS)
 
+#ifdef HAVE_PRIV_SET
+    if (cs->privs)
+	lbuf_append(lbuf, "PRIVS=\"%s\" ", cs->privs);
+    if (cs->limitprivs)
+	lbuf_append(lbuf, "LIMITPRIVS=\"%s\" ", cs->limitprivs);
+#endif /* HAVE_PRIV_SET */
 #ifdef HAVE_SELINUX
     if (cs->role)
 	lbuf_append(lbuf, "ROLE=%s ", cs->role);
@@ -293,6 +335,7 @@ sudo_file_append_cmnd(struct cmndspec *cs, struct cmndtag *tags,
     m = cs->cmnd;
     print_member(lbuf, m->name, m->type, m->negated,
 	CMNDALIAS);
+    debug_return;
 }
 
 static int
@@ -304,6 +347,7 @@ sudo_file_display_priv_short(struct passwd *pw, struct userspec *us,
     struct privilege *priv;
     struct cmndtag tags;
     int nfound = 0;
+    debug_decl(sudo_file_display_priv_short, SUDO_DEBUG_NSS)
 
     tq_foreach_fwd(&us->privileges, priv) {
 	if (hostlist_matches(&priv->hostlist) != ALLOW)
@@ -345,7 +389,7 @@ sudo_file_display_priv_short(struct passwd *pw, struct userspec *us,
 	}
 	lbuf_append(lbuf, "\n");
     }
-    return nfound;
+    debug_return_int(nfound);
 }
 
 static int
@@ -357,6 +401,7 @@ sudo_file_display_priv_long(struct passwd *pw, struct userspec *us,
     struct privilege *priv;
     struct cmndtag tags;
     int nfound = 0;
+    debug_decl(sudo_file_display_priv_long, SUDO_DEBUG_NSS)
 
     tq_foreach_fwd(&us->privileges, priv) {
 	if (hostlist_matches(&priv->hostlist) != ALLOW)
@@ -398,7 +443,7 @@ sudo_file_display_priv_long(struct passwd *pw, struct userspec *us,
 	    nfound++;
 	}
     }
-    return nfound;
+    debug_return_int(nfound);
 }
 
 int
@@ -407,6 +452,7 @@ sudo_file_display_privs(struct sudo_nss *nss, struct passwd *pw,
 {
     struct userspec *us;
     int nfound = 0;
+    debug_decl(sudo_file_display_priv, SUDO_DEBUG_NSS)
 
     if (nss->handle == NULL)
 	goto done;
@@ -421,7 +467,7 @@ sudo_file_display_privs(struct sudo_nss *nss, struct passwd *pw,
 	    nfound += sudo_file_display_priv_short(pw, us, lbuf);
     }
 done:
-    return nfound;
+    debug_return_int(nfound);
 }
 
 /*
@@ -434,6 +480,7 @@ sudo_file_display_defaults(struct sudo_nss *nss, struct passwd *pw,
     struct defaults *d;
     char *prefix;
     int nfound = 0;
+    debug_decl(sudo_file_display_defaults, SUDO_DEBUG_NSS)
 
     if (nss->handle == NULL)
 	goto done;
@@ -468,12 +515,12 @@ sudo_file_display_defaults(struct sudo_nss *nss, struct passwd *pw,
 		lbuf_append_quoted(lbuf, SUDOERS_QUOTED, "%s", d->val);
 	} else
 	    lbuf_append(lbuf, "%s%s%s", prefix,
-		d->op == FALSE ? "!" : "", d->var);
+		d->op == false ? "!" : "", d->var);
 	prefix = ", ";
 	nfound++;
     }
 done:
-    return nfound;
+    debug_return_int(nfound);
 }
 
 /*
@@ -484,12 +531,13 @@ sudo_file_display_bound_defaults(struct sudo_nss *nss, struct passwd *pw,
     struct lbuf *lbuf)
 {
     int nfound = 0;
+    debug_decl(sudo_file_display_bound_defaults, SUDO_DEBUG_NSS)
 
     /* XXX - should only print ones that match what the user can do. */
     nfound += display_bound_defaults(DEFAULTS_RUNAS, lbuf);
     nfound += display_bound_defaults(DEFAULTS_CMND, lbuf);
 
-    return nfound;
+    debug_return_int(nfound);
 }
 
 /*
@@ -502,6 +550,7 @@ display_bound_defaults(int dtype, struct lbuf *lbuf)
     struct member *m, *binding = NULL;
     char *dsep;
     int atype, nfound = 0;
+    debug_decl(display_bound_defaults, SUDO_DEBUG_NSS)
 
     switch (dtype) {
 	case DEFAULTS_HOST:
@@ -521,7 +570,7 @@ display_bound_defaults(int dtype, struct lbuf *lbuf)
 	    dsep = "!";
 	    break;
 	default:
-	    return -1;
+	    debug_return_int(-1);
     }
     tq_foreach_fwd(&defaults, d) {
 	if (d->type != dtype)
@@ -545,10 +594,10 @@ display_bound_defaults(int dtype, struct lbuf *lbuf)
 	    lbuf_append(lbuf, "%s%s%s", d->var, d->op == '+' ? "+=" :
 		d->op == '-' ? "-=" : "=", d->val);
 	} else
-	    lbuf_append(lbuf, "%s%s", d->op == FALSE ? "!" : "", d->var);
+	    lbuf_append(lbuf, "%s%s", d->op == false ? "!" : "", d->var);
     }
 
-    return nfound;
+    debug_return_int(nfound);
 }
 
 int
@@ -560,6 +609,7 @@ sudo_file_display_cmnd(struct sudo_nss *nss, struct passwd *pw)
     struct userspec *us;
     int rval = 1;
     int host_match, runas_match, cmnd_match;
+    debug_decl(sudo_file_display_cmnd, SUDO_DEBUG_NSS)
 
     if (nss->handle == NULL)
 	goto done;
@@ -575,7 +625,7 @@ sudo_file_display_cmnd(struct sudo_nss *nss, struct passwd *pw)
 		continue;
 	    tq_foreach_rev(&priv->cmndlist, cs) {
 		runas_match = runaslist_matches(&cs->runasuserlist,
-		    &cs->runasgrouplist);
+		    &cs->runasgrouplist, NULL, NULL);
 		if (runas_match == ALLOW) {
 		    cmnd_match = cmnd_matches(cs->cmnd);
 		    if (cmnd_match != UNSPEC) {
@@ -593,7 +643,7 @@ sudo_file_display_cmnd(struct sudo_nss *nss, struct passwd *pw)
 	rval = 0;
     }
 done:
-    return rval;
+    debug_return_int(rval);
 }
 
 /*
@@ -606,10 +656,14 @@ _print_member(struct lbuf *lbuf, char *name, int type, int negated,
     struct alias *a;
     struct member *m;
     struct sudo_command *c;
+    debug_decl(_print_member, SUDO_DEBUG_NSS)
 
     switch (type) {
 	case ALL:
 	    lbuf_append(lbuf, "%sALL", negated ? "!" : "");
+	    break;
+	case MYSELF:
+	    lbuf_append(lbuf, "%s%s", negated ? "!" : "", user_name);
 	    break;
 	case COMMAND:
 	    c = (struct sudo_command *) name;
@@ -636,6 +690,7 @@ _print_member(struct lbuf *lbuf, char *name, int type, int negated,
 	    lbuf_append(lbuf, "%s%s", negated ? "!" : "", name);
 	    break;
     }
+    debug_return;
 }
 
 static void

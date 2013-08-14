@@ -1,6 +1,6 @@
 %{
 /*
- * Copyright (c) 1996, 1998-2005, 2007-2011
+ * Copyright (c) 1996, 1998-2005, 2007-2012
  *	Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -44,6 +44,9 @@
 #ifdef HAVE_UNISTD_H
 # include <unistd.h>
 #endif /* HAVE_UNISTD_H */
+#ifdef HAVE_INTTYPES_H
+# include <inttypes.h>
+#endif
 #if defined(YYBISON) && defined(HAVE_ALLOCA_H) && !defined(__GNUC__)
 # include <alloca.h>
 #endif /* YYBISON && HAVE_ALLOCA_H && !__GNUC__ */
@@ -52,6 +55,7 @@
 #include "sudoers.h" /* XXX */
 #include "parse.h"
 #include "toke.h"
+#include "gram.h"
 
 /*
  * We must define SIZE_MAX for yacc's skeleton.c.
@@ -70,10 +74,10 @@
  * Globals
  */
 extern int sudolineno;
+extern int last_token;
 extern char *sudoers;
-int parse_error;
-int pedantic = FALSE;
-int verbose = FALSE;
+bool sudoers_warnings = true;
+bool parse_error = false;
 int errorlineno = -1;
 char *errorfile = NULL;
 
@@ -92,18 +96,26 @@ static struct member *new_member(char *, int);
 void
 yyerror(const char *s)
 {
+    debug_decl(yyerror, SUDO_DEBUG_PARSER)
+
+    /* If we last saw a newline the error is on the preceding line. */
+    if (last_token == COMMENT)
+	sudolineno--;
+
     /* Save the line the first error occurred on. */
     if (errorlineno == -1) {
-	errorlineno = sudolineno ? sudolineno - 1 : 0;
+	errorlineno = sudolineno;
 	errorfile = estrdup(sudoers);
     }
-    if (trace_print != NULL) {
+    if (sudoers_warnings && s != NULL) {
 	LEXTRACE("<*> ");
-    } else if (verbose && s != NULL) {
-	warningx(_(">>> %s: %s near line %d <<<"), sudoers, s,
-	    sudolineno ? sudolineno - 1 : 0);
+#ifndef TRACELEXER
+	if (trace_print == NULL || trace_print == sudoers_trace_print)
+	    warningx(_(">>> %s: %s near line %d <<<"), sudoers, s, sudolineno);
+#endif
     }
-    parse_error = TRUE;
+    parse_error = true;
+    debug_return;
 }
 %}
 
@@ -116,6 +128,7 @@ yyerror(const char *s)
     struct sudo_command command;
     struct cmndtag tag;
     struct selinux_info seinfo;
+    struct solaris_privs_info privinfo;
     char *string;
     int tok;
 }
@@ -154,6 +167,9 @@ yyerror(const char *s)
 %token <tok>	 ERROR
 %token <tok>	 TYPE			/* SELinux type */
 %token <tok>	 ROLE			/* SELinux role */
+%token <tok>	 PRIVS			/* Solaris privileges */
+%token <tok>	 LIMITPRIVS		/* Solaris limit privileges */
+%token <tok>	 MYSELF			/* run as myself, not another user */
 
 %type <cmndspec>  cmndspec
 %type <cmndspec>  cmndspeclist
@@ -179,6 +195,9 @@ yyerror(const char *s)
 %type <seinfo>	  selinux
 %type <string>	  rolespec
 %type <string>	  typespec
+%type <privinfo>  solarisprivs
+%type <string>	  privsspec
+%type <string>	  limitprivsspec
 
 %%
 
@@ -236,13 +255,13 @@ defaults_list	:	defaults_entry
 		;
 
 defaults_entry	:	DEFVAR {
-			    $$ = new_default($1, NULL, TRUE);
+			    $$ = new_default($1, NULL, true);
 			}
 		|	'!' DEFVAR {
-			    $$ = new_default($2, NULL, FALSE);
+			    $$ = new_default($2, NULL, false);
 			}
 		|	DEFVAR '=' WORD {
-			    $$ = new_default($1, $3, TRUE);
+			    $$ = new_default($1, $3, true);
 			}
 		|	DEFVAR '+' WORD {
 			    $$ = new_default($1, $3, '+');
@@ -260,22 +279,22 @@ privileges	:	privilege
 		;
 
 privilege	:	hostlist '=' cmndspeclist {
-			    struct privilege *p = emalloc(sizeof(*p));
+			    struct privilege *p = ecalloc(1, sizeof(*p));
 			    list2tq(&p->hostlist, $1);
 			    list2tq(&p->cmndlist, $3);
 			    p->prev = p;
-			    p->next = NULL;
+			    /* p->next = NULL; */
 			    $$ = p;
 			}
 		;
 
 ophost		:	host {
 			    $$ = $1;
-			    $$->negated = FALSE;
+			    $$->negated = false;
 			}
 		|	'!' host {
 			    $$ = $2;
-			    $$->negated = TRUE;
+			    $$->negated = true;
 			}
 		;
 
@@ -306,6 +325,13 @@ cmndspeclist	:	cmndspec
 			    if ($3->type == NULL)
 				$3->type = $3->prev->type;
 #endif /* HAVE_SELINUX */
+#ifdef HAVE_PRIV_SET
+			    /* propagate privs & limitprivs */
+			    if ($3->privs == NULL)
+			        $3->privs = $3->prev->privs;
+			    if ($3->limitprivs == NULL)
+			        $3->limitprivs = $3->prev->limitprivs;
+#endif /* HAVE_PRIV_SET */
 			    /* propagate tags and runas list */
 			    if ($3->tags.nopasswd == UNSPEC)
 				$3->tags.nopasswd = $3->prev->tags.nopasswd;
@@ -329,8 +355,8 @@ cmndspeclist	:	cmndspec
 			}
 		;
 
-cmndspec	:	runasspec selinux cmndtag opcmnd {
-			    struct cmndspec *cs = emalloc(sizeof(*cs));
+cmndspec	:	runasspec selinux solarisprivs cmndtag opcmnd {
+			    struct cmndspec *cs = ecalloc(1, sizeof(*cs));
 			    if ($1 != NULL) {
 				list2tq(&cs->runasuserlist, $1->runasusers);
 				list2tq(&cs->runasgrouplist, $1->runasgroups);
@@ -343,8 +369,12 @@ cmndspec	:	runasspec selinux cmndtag opcmnd {
 			    cs->role = $2.role;
 			    cs->type = $2.type;
 #endif
-			    cs->tags = $3;
-			    cs->cmnd = $4;
+#ifdef HAVE_PRIV_SET
+			    cs->privs = $3.privs;
+			    cs->limitprivs = $3.limitprivs;
+#endif
+			    cs->tags = $4;
+			    cs->cmnd = $5;
 			    cs->prev = cs;
 			    cs->next = NULL;
 			    /* sudo "ALL" implies the SETENV tag */
@@ -357,11 +387,11 @@ cmndspec	:	runasspec selinux cmndtag opcmnd {
 
 opcmnd		:	cmnd {
 			    $$ = $1;
-			    $$->negated = FALSE;
+			    $$->negated = false;
 			}
 		|	'!' cmnd {
 			    $$ = $2;
-			    $$->negated = TRUE;
+			    $$->negated = true;
 			}
 		;
 
@@ -397,6 +427,36 @@ selinux		:	/* empty */ {
 			}
 		;
 
+privsspec	:	PRIVS '=' WORD {
+			    $$ = $3;
+			}
+		;
+limitprivsspec	:	LIMITPRIVS '=' WORD {
+			    $$ = $3;
+			}
+		;
+
+solarisprivs	:	/* empty */ {
+			    $$.privs = NULL;
+			    $$.limitprivs = NULL;
+			}
+		|	privsspec {
+			    $$.privs = $1;
+			    $$.limitprivs = NULL;
+			}	
+		|	limitprivsspec {
+			    $$.privs = NULL;
+			    $$.limitprivs = $1;
+			}	
+		|	privsspec limitprivsspec {
+			    $$.privs = $1;
+			    $$.limitprivs = $2;
+			}	
+		|	limitprivsspec privsspec {
+			    $$.limitprivs = $1;
+			    $$.privs = $2;
+			}	
+
 runasspec	:	/* empty */ {
 			    $$ = NULL;
 			}
@@ -405,20 +465,30 @@ runasspec	:	/* empty */ {
 			}
 		;
 
-runaslist	:	userlist {
-			    $$ = emalloc(sizeof(struct runascontainer));
+runaslist	:	/* empty */ {
+			    $$ = ecalloc(1, sizeof(struct runascontainer));
+			    $$->runasusers = new_member(NULL, MYSELF);
+			    /* $$->runasgroups = NULL; */
+			}
+		|	userlist {
+			    $$ = ecalloc(1, sizeof(struct runascontainer));
 			    $$->runasusers = $1;
-			    $$->runasgroups = NULL;
+			    /* $$->runasgroups = NULL; */
 			}
 		|	userlist ':' grouplist {
-			    $$ = emalloc(sizeof(struct runascontainer));
+			    $$ = ecalloc(1, sizeof(struct runascontainer));
 			    $$->runasusers = $1;
 			    $$->runasgroups = $3;
 			}
 		|	':' grouplist {
-			    $$ = emalloc(sizeof(struct runascontainer));
-			    $$->runasusers = NULL;
+			    $$ = ecalloc(1, sizeof(struct runascontainer));
+			    /* $$->runasusers = NULL; */
 			    $$->runasgroups = $2;
+			}
+		|	':' {
+			    $$ = ecalloc(1, sizeof(struct runascontainer));
+			    $$->runasusers = new_member(NULL, MYSELF);
+			    /* $$->runasgroups = NULL; */
 			}
 		;
 
@@ -427,34 +497,34 @@ cmndtag		:	/* empty */ {
 				$$.log_input = $$.log_output = UNSPEC;
 			}
 		|	cmndtag NOPASSWD {
-			    $$.nopasswd = TRUE;
+			    $$.nopasswd = true;
 			}
 		|	cmndtag PASSWD {
-			    $$.nopasswd = FALSE;
+			    $$.nopasswd = false;
 			}
 		|	cmndtag NOEXEC {
-			    $$.noexec = TRUE;
+			    $$.noexec = true;
 			}
 		|	cmndtag EXEC {
-			    $$.noexec = FALSE;
+			    $$.noexec = false;
 			}
 		|	cmndtag SETENV {
-			    $$.setenv = TRUE;
+			    $$.setenv = true;
 			}
 		|	cmndtag NOSETENV {
-			    $$.setenv = FALSE;
+			    $$.setenv = false;
 			}
 		|	cmndtag LOG_INPUT {
-			    $$.log_input = TRUE;
+			    $$.log_input = true;
 			}
 		|	cmndtag NOLOG_INPUT {
-			    $$.log_input = FALSE;
+			    $$.log_input = false;
 			}
 		|	cmndtag LOG_OUTPUT {
-			    $$.log_output = TRUE;
+			    $$.log_output = true;
 			}
 		|	cmndtag NOLOG_OUTPUT {
-			    $$.log_output = FALSE;
+			    $$.log_output = false;
 			}
 		;
 
@@ -465,7 +535,7 @@ cmnd		:	ALL {
 			    $$ = new_member($1, ALIAS);
 			}
 		|	COMMAND {
-			    struct sudo_command *c = emalloc(sizeof(*c));
+			    struct sudo_command *c = ecalloc(1, sizeof(*c));
 			    c->cmnd = $1.cmnd;
 			    c->args = $1.args;
 			    $$ = new_member((char *)c, COMMAND);
@@ -547,11 +617,11 @@ userlist	:	opuser
 
 opuser		:	user {
 			    $$ = $1;
-			    $$->negated = FALSE;
+			    $$->negated = false;
 			}
 		|	'!' user {
 			    $$ = $2;
-			    $$->negated = TRUE;
+			    $$->negated = true;
 			}
 		;
 
@@ -581,11 +651,11 @@ grouplist	:	opgroup
 
 opgroup		:	group {
 			    $$ = $1;
-			    $$->negated = FALSE;
+			    $$->negated = false;
 			}
 		|	'!' group {
 			    $$ = $2;
-			    $$->negated = TRUE;
+			    $$->negated = true;
 			}
 		;
 
@@ -605,31 +675,33 @@ static struct defaults *
 new_default(char *var, char *val, int op)
 {
     struct defaults *d;
+    debug_decl(new_default, SUDO_DEBUG_PARSER)
 
-    d = emalloc(sizeof(struct defaults));
+    d = ecalloc(1, sizeof(struct defaults));
     d->var = var;
     d->val = val;
     tq_init(&d->binding);
-    d->type = 0;
+    /* d->type = 0; */
     d->op = op;
     d->prev = d;
-    d->next = NULL;
+    /* d->next = NULL; */
 
-    return d;
+    debug_return_ptr(d);
 }
 
 static struct member *
 new_member(char *name, int type)
 {
     struct member *m;
+    debug_decl(new_member, SUDO_DEBUG_PARSER)
 
-    m = emalloc(sizeof(struct member));
+    m = ecalloc(1, sizeof(struct member));
     m->name = name;
     m->type = type;
     m->prev = m;
-    m->next = NULL;
+    /* m->next = NULL; */
 
-    return m;
+    debug_return_ptr(m);
 }
 
 /*
@@ -642,6 +714,7 @@ add_defaults(int type, struct member *bmem, struct defaults *defs)
 {
     struct defaults *d;
     struct member_list binding;
+    debug_decl(add_defaults, SUDO_DEBUG_PARSER)
 
     /*
      * We can only call list2tq once on bmem as it will zero
@@ -657,6 +730,8 @@ add_defaults(int type, struct member *bmem, struct defaults *defs)
 	d->binding = binding;
     }
     tq_append(&defaults, defs);
+
+    debug_return;
 }
 
 /*
@@ -667,13 +742,16 @@ static void
 add_userspec(struct member *members, struct privilege *privs)
 {
     struct userspec *u;
+    debug_decl(add_userspec, SUDO_DEBUG_PARSER)
 
-    u = emalloc(sizeof(*u));
+    u = ecalloc(1, sizeof(*u));
     list2tq(&u->users, members);
     list2tq(&u->privileges, privs);
     u->prev = u;
-    u->next = NULL;
+    /* u->next = NULL; */
     tq_append(&userspecs, u);
+
+    debug_return;
 }
 
 /*
@@ -681,7 +759,7 @@ add_userspec(struct member *members, struct privilege *privs)
  * the current sudoers file to path.
  */
 void
-init_parser(const char *path, int quiet)
+init_parser(const char *path, bool quiet)
 {
     struct defaults *d;
     struct member *m, *binding;
@@ -689,6 +767,7 @@ init_parser(const char *path, int quiet)
     struct privilege *priv;
     struct cmndspec *cs;
     struct sudo_command *c;
+    debug_decl(init_parser, SUDO_DEBUG_PARSER)
 
     while ((us = tq_pop(&userspecs)) != NULL) {
 	while ((m = tq_pop(&us->users)) != NULL) {
@@ -700,6 +779,9 @@ init_parser(const char *path, int quiet)
 #ifdef HAVE_SELINUX
 	    char *role = NULL, *type = NULL;
 #endif /* HAVE_SELINUX */
+#ifdef HAVE_PRIV_SET
+	    char *privs = NULL, *limitprivs = NULL;
+#endif /* HAVE_PRIV_SET */
 
 	    while ((m = tq_pop(&priv->hostlist)) != NULL) {
 		efree(m->name);
@@ -717,6 +799,17 @@ init_parser(const char *path, int quiet)
 		    efree(cs->type);
 		}
 #endif /* HAVE_SELINUX */
+#ifdef HAVE_PRIV_SET
+		/* Only free the first instance of privs/limitprivs. */
+		if (cs->privs != privs) {
+		    privs = cs->privs;
+		    efree(cs->privs);
+		}
+		if (cs->limitprivs != limitprivs) {
+		    limitprivs = cs->limitprivs;
+		    efree(cs->limitprivs);
+		}
+#endif /* HAVE_PRIV_SET */
 		if (tq_last(&cs->runasuserlist) != runasuser) {
 		    runasuser = tq_last(&cs->runasuserlist);
 		    while ((m = tq_pop(&cs->runasuserlist)) != NULL) {
@@ -773,8 +866,10 @@ init_parser(const char *path, int quiet)
     efree(sudoers);
     sudoers = path ? estrdup(path) : NULL;
 
-    parse_error = FALSE;
+    parse_error = false;
     errorlineno = -1;
-    errorfile = NULL;
-    verbose = !quiet;
+    errorfile = sudoers;
+    sudoers_warnings = !quiet;
+
+    debug_return;
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1993-1996, 1998-2011 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 1993-1996, 1998-2012 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -72,8 +72,8 @@ static struct sudo_settings {
     { "bsdauth_type" },
 #define ARG_LOGIN_CLASS 1
     { "login_class" },
-#define ARG_DEBUG_LEVEL 2
-    { "debug_level" },
+#define ARG_DEBUG_FLAGS 2
+    { "debug_flags" },
 #define ARG_PRESERVE_ENVIRONMENT 3
     { "preserve_environment" },
 #define ARG_RUNAS_GROUP 4
@@ -126,8 +126,10 @@ parse_args(int argc, char **argv, int *nargc, char ***nargv, char ***settingsp,
     int valid_flags, ch;
     int i, j;
     char *cp, **env_add, **settings;
+    const char *debug_flags;
     int nenv = 0;
     int env_size = 32;
+    debug_decl(parse_args, SUDO_DEBUG_ARGS)
 
     env_add = emalloc2(env_size, sizeof(char *));
 
@@ -143,6 +145,11 @@ parse_args(int argc, char **argv, int *nargc, char ***nargv, char ***settingsp,
     /* Load local IP addresses and masks. */
     if (get_net_ifs(&cp) > 0)
 	sudo_settings[ARG_NET_ADDRS].value = cp;
+
+    /* Set debug file and flags from sudo.conf. */
+    debug_flags = sudo_conf_debug_flags();
+    if (debug_flags != NULL)
+	sudo_settings[ARG_DEBUG_FLAGS].value = debug_flags;
 
     /* Returns true if the last option string was "--" */
 #define got_end_of_args	(optind > 1 && argv[optind - 1][0] == '-' && \
@@ -188,11 +195,7 @@ parse_args(int argc, char **argv, int *nargc, char ***nargv, char ***settingsp,
 		    break;
 #endif
 		case 'D':
-		    if ((debug_level = atoi(optarg)) < 1 || debug_level > 9) {
-			warningx(_("the argument to -D must be between 1 and 9 inclusive"));
-			usage(1);
-		    }
-		    sudo_settings[ARG_DEBUG_LEVEL].value = optarg;
+		    /* Ignored for backwards compatibility. */
 		    break;
 		case 'E':
 		    sudo_settings[ARG_PRESERVE_ENVIRONMENT].value = "true";
@@ -314,7 +317,7 @@ parse_args(int argc, char **argv, int *nargc, char ***nargv, char ***settingsp,
     if (!mode) {
 	/* Defer -k mode setting until we know whether it is a flag or not */
 	if (sudo_settings[ARG_IGNORE_TICKET].value != NULL) {
-	    if (argc == 0) {
+	    if (argc == 0 && !(flags & (MODE_SHELL|MODE_LOGIN_SHELL))) {
 		mode = MODE_INVALIDATE;	/* -k by itself */
 		sudo_settings[ARG_IGNORE_TICKET].value = NULL;
 		valid_flags = 0;
@@ -375,17 +378,12 @@ parse_args(int argc, char **argv, int *nargc, char ***nargv, char ***settingsp,
      * For shell mode we need to rewrite argv
      */
     if (ISSET(mode, MODE_RUN) && ISSET(flags, MODE_SHELL)) {
-	char **av;
-	int ac;
+	char **av, *cmnd = NULL;
+	int ac = 1;
 
-	if (argc == 0) {
-	    /* just the shell */
-	    ac = argc + 1;
-	    av = emalloc2(ac + 1, sizeof(char *));
-	    memcpy(av + 1, argv, argc * sizeof(char *));
-	} else {
+	if (argc != 0) {
 	    /* shell -c "command" */
-	    char *cmnd, *src, *dst;
+	    char *src, *dst;
 	    size_t cmnd_size = (size_t) (argv[argc - 1] - argv[0]) +
 		strlen(argv[argc - 1]) + 1;
 
@@ -403,12 +401,15 @@ parse_args(int argc, char **argv, int *nargc, char ***nargv, char ***settingsp,
 		dst--;  /* replace last space with a NUL */
 	    *dst = '\0';
 
-	    ac = 3;
-	    av = emalloc2(ac + 1, sizeof(char *));
+	    ac += 2; /* -c cmnd */
+	}
+
+	av = emalloc2(ac + 1, sizeof(char *));
+	av[0] = (char *)user_details.shell; /* plugin may override shell */
+	if (cmnd != NULL) {
 	    av[1] = "-c";
 	    av[2] = cmnd;
 	}
-	av[0] = (char *)user_details.shell; /* plugin may override shell */
 	av[ac] = NULL;
 
 	argv = av;
@@ -421,8 +422,8 @@ parse_args(int argc, char **argv, int *nargc, char ***nargv, char ***settingsp,
     settings = emalloc2(NUM_SETTINGS + 1, sizeof(char *));
     for (i = 0, j = 0; i < NUM_SETTINGS; i++) {
 	if (sudo_settings[i].value) {
-	    sudo_debug(9, "settings: %s=%s", sudo_settings[i].name,
-		sudo_settings[i].value);
+	    sudo_debug_printf(SUDO_DEBUG_INFO, "settings: %s=%s",
+		sudo_settings[i].name, sudo_settings[i].value);
 	    settings[j] = fmt_string(sudo_settings[i].name,
 		sudo_settings[i].value);
 	    if (settings[j] == NULL)
@@ -447,7 +448,7 @@ parse_args(int argc, char **argv, int *nargc, char ***nargv, char ***settingsp,
     *env_addp = env_add;
     *nargc = argc;
     *nargv = argv;
-    return mode | flags;
+    debug_return_int(mode | flags);
 }
 
 static int
@@ -510,6 +511,8 @@ usage(int fatal)
 static void
 usage_excl(int fatal)
 {
+    debug_decl(usage_excl, SUDO_DEBUG_ARGS)
+
     warningx(_("Only one of the -e, -h, -i, -K, -l, -s, -v or -V options may be specified"));
     usage(fatal);
 }
@@ -520,6 +523,7 @@ help(void)
     struct lbuf lbuf;
     int indent = 16;
     const char *pname = getprogname();
+    debug_decl(help, SUDO_DEBUG_ARGS)
 
     lbuf_init(&lbuf, usage_out, indent, NULL, user_details.ts_cols);
     if (strcmp(pname, "sudoedit") == 0)
@@ -593,5 +597,6 @@ help(void)
 	_("stop processing command line arguments\n"));
     lbuf_print(&lbuf);
     lbuf_destroy(&lbuf);
+    sudo_debug_exit_int(__func__, __FILE__, __LINE__, sudo_debug_subsys, 0);
     exit(0);
 }

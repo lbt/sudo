@@ -47,11 +47,14 @@
 #include "alloc.h"
 #include "error.h"
 #include "lbuf.h"
+#include "sudo_debug.h"
 
 void
 lbuf_init(struct lbuf *lbuf, int (*output)(const char *),
     int indent, const char *continuation, int cols)
 {
+    debug_decl(lbuf_init, SUDO_DEBUG_UTIL)
+
     lbuf->output = output;
     lbuf->continuation = continuation;
     lbuf->indent = indent;
@@ -59,13 +62,19 @@ lbuf_init(struct lbuf *lbuf, int (*output)(const char *),
     lbuf->len = 0;
     lbuf->size = 0;
     lbuf->buf = NULL;
+
+    debug_return;
 }
 
 void
 lbuf_destroy(struct lbuf *lbuf)
 {
+    debug_decl(lbuf_destroy, SUDO_DEBUG_UTIL)
+
     efree(lbuf->buf);
     lbuf->buf = NULL;
+
+    debug_return;
 }
 
 /*
@@ -78,6 +87,7 @@ lbuf_append_quoted(struct lbuf *lbuf, const char *set, const char *fmt, ...)
     va_list ap;
     int len;
     char *cp, *s = NULL;
+    debug_decl(lbuf_append_quoted, SUDO_DEBUG_UTIL)
 
     va_start(ap, fmt);
     while (*fmt != '\0') {
@@ -118,6 +128,8 @@ lbuf_append_quoted(struct lbuf *lbuf, const char *set, const char *fmt, ...)
     }
     lbuf->buf[lbuf->len] = '\0';
     va_end(ap);
+
+    debug_return;
 }
 
 /*
@@ -129,6 +141,7 @@ lbuf_append(struct lbuf *lbuf, const char *fmt, ...)
     va_list ap;
     int len;
     char *s = NULL;
+    debug_decl(lbuf_append, SUDO_DEBUG_UTIL)
 
     va_start(ap, fmt);
     while (*fmt != '\0') {
@@ -155,6 +168,8 @@ lbuf_append(struct lbuf *lbuf, const char *fmt, ...)
     }
     lbuf->buf[lbuf->len] = '\0';
     va_end(ap);
+
+    debug_return;
 }
 
 static void
@@ -162,6 +177,7 @@ lbuf_println(struct lbuf *lbuf, char *line, int len)
 {
     char *cp, save;
     int i, have, contlen;
+    debug_decl(lbuf_println, SUDO_DEBUG_UTIL)
 
     contlen = lbuf->continuation ? strlen(lbuf->continuation) : 0;
 
@@ -210,6 +226,8 @@ lbuf_println(struct lbuf *lbuf, char *line, int len)
 	}
 	lbuf->output("\n");
     }
+
+    debug_return;
 }
 
 /*
@@ -221,6 +239,7 @@ lbuf_print(struct lbuf *lbuf)
 {
     char *cp, *ep;
     int len;
+    debug_decl(lbuf_print, SUDO_DEBUG_UTIL)
 
     if (lbuf->buf == NULL || lbuf->len == 0)
 	goto done;
@@ -228,8 +247,12 @@ lbuf_print(struct lbuf *lbuf)
     /* For very small widths just give up... */
     len = lbuf->continuation ? strlen(lbuf->continuation) : 0;
     if (lbuf->cols <= lbuf->indent + len + 20) {
-	lbuf->buf[lbuf->len] = '\0';
-	lbuf->output(lbuf->buf);
+	if (lbuf->len > 0) {
+	    lbuf->buf[lbuf->len] = '\0';
+	    lbuf->output(lbuf->buf);
+	    if (lbuf->buf[lbuf->len - 1] != '\n')
+		lbuf->output("\n");
+	}
 	goto done;
     }
 
@@ -250,4 +273,6 @@ lbuf_print(struct lbuf *lbuf)
 
 done:
     lbuf->len = 0;		/* reset the buffer for re-use. */
+
+    debug_return;
 }

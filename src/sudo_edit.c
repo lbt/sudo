@@ -16,8 +16,6 @@
 
 #include <config.h>
 
-#if defined(HAVE_SETRESUID) || defined(HAVE_SETREUID) || defined(HAVE_SETEUID)
-
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/stat.h>
@@ -54,10 +52,13 @@
 
 #include "sudo.h"
 
+#if defined(HAVE_SETRESUID) || defined(HAVE_SETREUID) || defined(HAVE_SETEUID)
+
 static void
 switch_user(uid_t euid, gid_t egid, int ngroups, GETGROUPS_T *groups)
 {
     int serrno = errno;
+    debug_decl(switch_user, SUDO_DEBUG_EDIT)
 
     /* When restoring root, change euid first; otherwise change it last. */
     if (euid == ROOT_UID) {
@@ -74,8 +75,9 @@ switch_user(uid_t euid, gid_t egid, int ngroups, GETGROUPS_T *groups)
 	if (seteuid(euid) != 0)
 	    error(1, "seteuid(%d)", (int)euid);
     }
-
     errno = serrno;
+
+    debug_return;
 }
 
 /*
@@ -98,7 +100,8 @@ sudo_edit(struct command_details *command_details)
 	char *ofile;
 	struct timeval omtim;
 	off_t osize;
-    } *tf;
+    } *tf = NULL;
+    debug_decl(sudo_edit, SUDO_DEBUG_EDIT)
 
     /*
      * Set real, effective and saved uids to root.
@@ -106,7 +109,7 @@ sudo_edit(struct command_details *command_details)
      */
     if (setuid(ROOT_UID) != 0) {
 	warning(_("unable to change uid to root (%u)"), ROOT_UID);
-	return 1;
+	goto cleanup;
     }
 
     /*
@@ -138,7 +141,7 @@ sudo_edit(struct command_details *command_details)
     }
     if (nfiles == 0) {
 	warningx(_("plugin error: missing file list for sudoedit"));
-	return 1;
+	goto cleanup;
     }
 
     /*
@@ -156,11 +159,7 @@ sudo_edit(struct command_details *command_details)
 		zero_bytes(&sb, sizeof(sb));		/* new file */
 		rc = 0;
 	    } else {
-#ifdef HAVE_FSTAT
 		rc = fstat(ofd, &sb);
-#else
-		rc = stat(tf[j].ofile, &sb);
-#endif
 	    }
 	}
 	switch_user(ROOT_UID, user_details.egid,
@@ -217,18 +216,14 @@ sudo_edit(struct command_details *command_details)
 	 * to determine whether or not a file has been modified.
 	 */
 	(void) touch(tfd, NULL, &tf[j].omtim);
-#ifdef HAVE_FSTAT
 	rc = fstat(tfd, &sb);
-#else
-	rc = stat(tf[j].tfile, &sb);
-#endif
 	if (!rc)
 	    mtim_get(&sb, &tf[j].omtim);
 	close(tfd);
 	j++;
     }
     if ((nfiles = j) == 0)
-	return 1;			/* no files readable, you lose */
+	goto cleanup;		/* no files readable, you lose */
 
     /*
      * Allocate space for the new argument vector and fill it in.
@@ -265,11 +260,7 @@ sudo_edit(struct command_details *command_details)
 	if (seteuid(user_details.uid) != 0)
 	    error(1, "seteuid(%d)", (int)user_details.uid);
 	if ((tfd = open(tf[i].tfile, O_RDONLY, 0644)) != -1) {
-#ifdef HAVE_FSTAT
 	    rc = fstat(tfd, &sb);
-#else
-	    rc = stat(tf[i].tfile, &sb);
-#endif
 	}
 	if (seteuid(ROOT_UID) != 0)
 	    error(1, "seteuid(ROOT_UID)");
@@ -329,15 +320,17 @@ sudo_edit(struct command_details *command_details)
 	}
 	close(ofd);
     }
+    debug_return_int(rval);
 
-    return rval;
 cleanup:
     /* Clean up temp files and return. */
-    for (i = 0; i < nfiles; i++) {
-	if (tf[i].tfile != NULL)
-	    unlink(tf[i].tfile);
+    if (tf != NULL) {
+	for (i = 0; i < nfiles; i++) {
+	    if (tf[i].tfile != NULL)
+		unlink(tf[i].tfile);
+	}
     }
-    return 1;
+    debug_return_int(1);
 }
 
 #else /* HAVE_SETRESUID || HAVE_SETREUID || HAVE_SETEUID */
@@ -348,7 +341,8 @@ cleanup:
 int
 sudo_edit(struct command_details *command_details)
 {
-    return 1;
+    debug_decl(sudo_edit, SUDO_DEBUG_EDIT)
+    debug_return_int(1);
 }
 
 #endif /* HAVE_SETRESUID || HAVE_SETREUID || HAVE_SETEUID */

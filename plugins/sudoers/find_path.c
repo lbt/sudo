@@ -60,9 +60,10 @@ find_path(char *infile, char **outfile, struct stat *sbp, char *path,
     static char command[PATH_MAX]; /* qualified filename */
     char *n;			/* for traversing path */
     char *origpath;		/* so we can free path later */
-    char *result = NULL;	/* result of path/file lookup */
-    int checkdot = 0;		/* check current dir? */
+    bool found = false;		/* did we find the command? */
+    bool checkdot = false;	/* check current dir? */
     int len;			/* length parameter */
+    debug_decl(find_path, SUDO_DEBUG_UTIL)
 
     if (strlen(infile) >= PATH_MAX)
 	errorx(1, _("%s: %s"), infile, strerror(ENAMETOOLONG));
@@ -75,13 +76,13 @@ find_path(char *infile, char **outfile, struct stat *sbp, char *path,
 	strlcpy(command, infile, sizeof(command));	/* paranoia */
 	if (sudo_goodpath(command, sbp)) {
 	    *outfile = command;
-	    return FOUND;
+	    debug_return_int(FOUND);
 	} else
-	    return NOT_FOUND;
+	    debug_return_int(NOT_FOUND);
     }
 
     if (path == NULL)
-	return NOT_FOUND;
+	debug_return_int(NOT_FOUND);
     path = estrdup(path);
     origpath = path;
 
@@ -105,7 +106,7 @@ find_path(char *infile, char **outfile, struct stat *sbp, char *path,
 	len = snprintf(command, sizeof(command), "%s/%s", path, infile);
 	if (len <= 0 || len >= sizeof(command))
 	    errorx(1, _("%s: %s"), infile, strerror(ENAMETOOLONG));
-	if ((result = sudo_goodpath(command, sbp)))
+	if ((found = sudo_goodpath(command, sbp)))
 	    break;
 
 	path = n + 1;
@@ -116,18 +117,18 @@ find_path(char *infile, char **outfile, struct stat *sbp, char *path,
     /*
      * Check current dir if dot was in the PATH
      */
-    if (!result && checkdot) {
+    if (!found && checkdot) {
 	len = snprintf(command, sizeof(command), "./%s", infile);
 	if (len <= 0 || len >= sizeof(command))
 	    errorx(1, _("%s: %s"), infile, strerror(ENAMETOOLONG));
-	result = sudo_goodpath(command, sbp);
-	if (result && ignore_dot)
-	    return NOT_FOUND_DOT;
+	found = sudo_goodpath(command, sbp);
+	if (found && ignore_dot)
+	    debug_return_int(NOT_FOUND_DOT);
     }
 
-    if (result) {
-	*outfile = result;
-	return FOUND;
+    if (found) {
+	*outfile = command;
+	debug_return_int(FOUND);
     } else
-	return NOT_FOUND;
+	debug_return_int(NOT_FOUND);
 }

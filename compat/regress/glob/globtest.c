@@ -14,18 +14,16 @@
 #ifdef HAVE_STRINGS_H
 # include <strings.h>
 #endif /* HAVE_STRINGS_H */
-#ifdef HAVE_EXTENDED_GLOB
+#ifdef HAVE_GLOB
 # include <glob.h>
 #else
 # include "compat/glob.h"
 #endif
 #include <errno.h>
 
-#define MAX_RESULTS	256
+#include "missing.h"
 
-#ifndef errno
-extern int errno;
-#endif
+#define MAX_RESULTS	256
 
 struct gl_entry {
 	int flags;

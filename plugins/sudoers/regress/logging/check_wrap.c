@@ -36,8 +36,13 @@
 # include <strings.h>
 #endif /* HAVE_STRINGS_H */
 
+#define SUDO_ERROR_WRAP 0
+
 #include "missing.h"
 #include "error.h"
+#include "sudo_plugin.h"
+
+sudo_conv_t sudo_conv;		/* NULL in non-plugin */
 
 extern void writeln_wrap(FILE *fp, char *line, size_t len, size_t maxlen);
 
@@ -55,6 +60,10 @@ main(int argc, char *argv[])
     FILE *fp;
     char *cp, *dash, *line, lines[2][2048];
     int which = 0;
+
+#if !defined(HAVE_GETPROGNAME) && !defined(HAVE___PROGNAME)
+    setprogname(argc > 0 ? argv[0] : "check_wrap");
+#endif
 
     if (argc != 2)
 	usage();

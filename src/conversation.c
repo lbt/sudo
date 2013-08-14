@@ -47,8 +47,13 @@
 
 #include "sudo.h"
 #include "sudo_plugin.h"
+#include "sudo_plugin_int.h"
 
 extern int tgetpass_flags; /* XXX */
+
+#if defined(HAVE_DLOPEN) || defined(HAVE_SHL_LOAD)
+sudo_conv_t sudo_conv;	/* NULL in sudo front-end */
+#endif
 
 /*
  * Sudo conversation function.
@@ -90,6 +95,10 @@ sudo_conversation(int num_msgs, const struct sudo_conv_message msgs[],
 	    case SUDO_CONV_ERROR_MSG:
 		if (msg->msg)
 		    (void) fputs(msg->msg, stderr);
+		break;
+	    case SUDO_CONV_DEBUG_MSG:
+		if (msg->msg)
+		    sudo_debug_write(msg->msg, strlen(msg->msg), 0);
 		break;
 	    default:
 		goto err;

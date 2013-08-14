@@ -89,20 +89,54 @@ static int   timestamp_status(char *, char *, char *, int);
 static char *expand_prompt(char *, char *, char *);
 static void  lecture(int);
 static void  update_timestamp(char *, char *);
-static int   tty_is_devpts(const char *);
+static bool  tty_is_devpts(const char *);
 static struct passwd *get_authpw(void);
 
 /*
- * Returns TRUE if the user successfully authenticates, else FALSE.
+ * Returns true if the user successfully authenticates, false if not
+ * or -1 on error.
  */
 int
 check_user(int validated, int mode)
 {
+    struct passwd *auth_pw;
     char *timestampdir = NULL;
     char *timestampfile = NULL;
     char *prompt;
     struct stat sb;
-    int status, rval = TRUE;
+    int status, rval = true;
+    debug_decl(check_user, SUDO_DEBUG_AUTH)
+
+    /*
+     * Init authentication system regardless of whether we need a password.
+     * Required for proper PAM session support.
+     */
+    auth_pw = get_authpw();
+    if (sudo_auth_init(auth_pw) == -1) {
+	rval = -1;
+	goto done;
+    }
+
+    /*
+     * Don't prompt for the root passwd or if the user is exempt.
+     * If the user is not changing uid/gid, no need for a password.
+     */
+    if (!def_authenticate || user_uid == 0 || user_is_exempt())
+	goto done;
+    if (user_uid == runas_pw->pw_uid &&
+	(!runas_gr || user_in_group(sudo_user.pw, runas_gr->gr_name))) {
+#ifdef HAVE_SELINUX
+	if (user_role == NULL && user_type == NULL)
+#endif
+#ifdef HAVE_PRIV_SET
+	if (runas_privs == NULL && runas_limitprivs == NULL)
+#endif
+	    goto done;
+    }
+
+    /* Always need a password when -k was specified with the command. */
+    if (ISSET(mode, MODE_IGNORE_TICKET))
+	SET(validated, FLAG_CHECK_USER);
 
     /* Stash the tty's ctime for tty ticket comparison. */
     if (def_tty_tickets && user_ttypath && stat(user_ttypath, &sb) == 0) {
@@ -113,33 +147,21 @@ check_user(int validated, int mode)
 	    ctim_get(&sb, &tty_info.ctime);
     }
 
-    /* Always prompt for a password when -k was specified with the command. */
-    if (ISSET(mode, MODE_IGNORE_TICKET)) {
-	SET(validated, FLAG_CHECK_USER);
-    } else {
-	/*
-	 * Don't prompt for the root passwd or if the user is exempt.
-	 * If the user is not changing uid/gid, no need for a password.
-	 */
-	if (user_uid == 0 || (user_uid == runas_pw->pw_uid &&
-	    (!runas_gr || user_in_group(sudo_user.pw, runas_gr->gr_name))) ||
-	    user_is_exempt())
-	    return TRUE;
+    if (build_timestamp(&timestampdir, &timestampfile) == -1) {
+	rval = -1;
+	goto done;
     }
-
-    if (build_timestamp(&timestampdir, &timestampfile) == -1)
-	return -1;
 
     status = timestamp_status(timestampdir, timestampfile, user_name,
 	TS_MAKE_DIRS);
 
     if (status != TS_CURRENT || ISSET(validated, FLAG_CHECK_USER)) {
-	struct passwd *auth_pw;
-
 	/* Bail out if we are non-interactive and a password is required */
 	if (ISSET(mode, MODE_NONINTERACTIVE)) {
-	    warningx(_("sorry, a password is required to run %s"), getprogname());
-	    return -1;
+	    validated |= FLAG_NON_INTERACTIVE;
+	    log_auth_failure(validated, 0);
+	    rval = -1;
+	    goto done;
 	}
 
 	/* XXX - should not lecture if askpass helper is being used. */
@@ -149,18 +171,20 @@ check_user(int validated, int mode)
 	prompt = expand_prompt(user_prompt ? user_prompt : def_passprompt,
 	    user_name, user_shost);
 
-	auth_pw = get_authpw();
-	rval = verify_user(auth_pw, prompt);
-	pw_delref(auth_pw);
+	rval = verify_user(auth_pw, prompt, validated);
     }
     /* Only update timestamp if user was validated. */
-    if (rval == TRUE && ISSET(validated, VALIDATE_OK) &&
+    if (rval == true && ISSET(validated, VALIDATE_OK) &&
 	!ISSET(mode, MODE_IGNORE_TICKET) && status != TS_ERROR)
 	update_timestamp(timestampdir, timestampfile);
     efree(timestampdir);
     efree(timestampfile);
 
-    return rval;
+done:
+    sudo_auth_cleanup(auth_pw);
+    sudo_pw_delref(auth_pw);
+
+    debug_return_bool(rval);
 }
 
 #define DEFAULT_LECTURE "\n" \
@@ -181,17 +205,18 @@ lecture(int status)
     ssize_t nread;
     struct sudo_conv_message msg;
     struct sudo_conv_reply repl;
+    debug_decl(lecture, SUDO_DEBUG_AUTH)
 
     if (def_lecture == never ||
 	(def_lecture == once && status != TS_MISSING && status != TS_ERROR))
-	return;
+	debug_return;
 
     memset(&msg, 0, sizeof(msg));
     memset(&repl, 0, sizeof(repl));
 
     if (def_lecture_file && (fp = fopen(def_lecture_file, "r")) != NULL) {
 	while ((nread = fread(buf, sizeof(char), sizeof(buf) - 1, fp)) != 0) {
-	    buf[sizeof(buf) - 1] = '\0';
+	    buf[nread] = '\0';
 	    msg.msg_type = SUDO_CONV_ERROR_MSG;
 	    msg.msg = buf;
 	    sudo_conv(1, &msg, &repl);
@@ -202,6 +227,7 @@ lecture(int status)
 	msg.msg = _(DEFAULT_LECTURE);
 	sudo_conv(1, &msg, &repl);
     }
+    debug_return;
 }
 
 /*
@@ -210,9 +236,11 @@ lecture(int status)
 static void
 update_timestamp(char *timestampdir, char *timestampfile)
 {
+    debug_decl(update_timestamp, SUDO_DEBUG_AUTH)
+
     /* If using tty timestamps but we have no tty there is nothing to do. */
     if (def_tty_tickets && !user_ttypath)
-	return;
+	debug_return;
 
     if (timestamp_uid != 0)
 	set_perms(PERM_TIMESTAMP);
@@ -222,11 +250,11 @@ update_timestamp(char *timestampdir, char *timestampfile)
 	 */
 	int fd = open(timestampfile, O_WRONLY|O_CREAT, 0600);
 	if (fd == -1)
-	    log_error(NO_EXIT|USE_ERRNO, _("unable to open %s"), timestampfile);
+	    log_error(USE_ERRNO, _("unable to open %s"), timestampfile);
 	else {
 	    lock_file(fd, SUDO_LOCK);
 	    if (write(fd, &tty_info, sizeof(tty_info)) != sizeof(tty_info)) {
-		log_error(NO_EXIT|USE_ERRNO, _("unable to write to %s"),
+		log_error(USE_ERRNO, _("unable to write to %s"),
 		    timestampfile);
 	    }
 	    close(fd);
@@ -234,13 +262,14 @@ update_timestamp(char *timestampdir, char *timestampfile)
     } else {
 	if (touch(-1, timestampdir, NULL) == -1) {
 	    if (mkdir(timestampdir, 0700) == -1) {
-		log_error(NO_EXIT|USE_ERRNO, _("unable to mkdir %s"),
+		log_error(USE_ERRNO, _("unable to mkdir %s"),
 		    timestampdir);
 	    }
 	}
     }
     if (timestamp_uid != 0)
 	restore_perms();
+    debug_return;
 }
 
 /*
@@ -253,6 +282,7 @@ expand_prompt(char *old_prompt, char *user, char *host)
     size_t len, n;
     int subst;
     char *p, *np, *new_prompt, *endp;
+    debug_decl(expand_prompt, SUDO_DEBUG_AUTH)
 
     /* How much space do we need to malloc for the prompt? */
     subst = 0;
@@ -363,22 +393,25 @@ expand_prompt(char *old_prompt, char *user, char *host)
     } else
 	new_prompt = old_prompt;
 
-    return new_prompt;
+    debug_return_str(new_prompt);
 
 oflow:
     /* We pre-allocate enough space, so this should never happen. */
-    errorx(1, _("internal error, expand_prompt() overflow"));
+    errorx(1, _("internal error, %s overflow"), "expand_prompt()");
 }
 
 /*
  * Checks if the user is exempt from supplying a password.
  */
-int
+bool
 user_is_exempt(void)
 {
-    if (!def_exempt_group)
-	return FALSE;
-    return user_in_group(sudo_user.pw, def_exempt_group);
+    bool rval = false;
+    debug_decl(user_is_exempt, SUDO_DEBUG_AUTH)
+
+    if (def_exempt_group)
+	rval = user_in_group(sudo_user.pw, def_exempt_group);
+    debug_return_bool(rval);
 }
 
 /*
@@ -389,8 +422,10 @@ build_timestamp(char **timestampdir, char **timestampfile)
 {
     char *dirparent;
     int len;
+    debug_decl(build_timestamp, SUDO_DEBUG_AUTH)
 
     dirparent = def_timestampdir;
+    *timestampfile = NULL;
     len = easprintf(timestampdir, "%s/%s", dirparent, user_name);
     if (len >= PATH_MAX)
 	goto bad;
@@ -421,10 +456,12 @@ build_timestamp(char **timestampdir, char **timestampfile)
     } else
 	*timestampfile = NULL;
 
-    return len;
+    debug_return_int(len);
 bad:
-    log_error(0, _("timestamp path too long: %s"), *timestampfile);
-    return -1;
+    log_fatal(0, _("timestamp path too long: %s"),
+	*timestampfile ? *timestampfile : *timestampdir);
+    /* NOTREACHED */
+    debug_return_int(-1);
 }
 
 /*
@@ -438,6 +475,7 @@ timestamp_status(char *timestampdir, char *timestampfile, char *user, int flags)
     time_t now;
     char *dirparent = def_timestampdir;
     int status = TS_ERROR;		/* assume the worst */
+    debug_decl(timestamp_status, SUDO_DEBUG_AUTH)
 
     if (timestamp_uid != 0)
 	set_perms(PERM_TIMESTAMP);
@@ -451,14 +489,14 @@ timestamp_status(char *timestampdir, char *timestampfile, char *user, int flags)
      */
     if (lstat(dirparent, &sb) == 0) {
 	if (!S_ISDIR(sb.st_mode))
-	    log_error(NO_EXIT, _("%s exists but is not a directory (0%o)"),
+	    log_error(0, _("%s exists but is not a directory (0%o)"),
 		dirparent, (unsigned int) sb.st_mode);
 	else if (sb.st_uid != timestamp_uid)
-	    log_error(NO_EXIT, _("%s owned by uid %u, should be uid %u"),
+	    log_error(0, _("%s owned by uid %u, should be uid %u"),
 		dirparent, (unsigned int) sb.st_uid,
 		(unsigned int) timestamp_uid);
 	else if ((sb.st_mode & 0000022))
-	    log_error(NO_EXIT,
+	    log_error(0,
 		_("%s writable by non-owner (0%o), should be mode 0700"),
 		dirparent, (unsigned int) sb.st_mode);
 	else {
@@ -467,12 +505,12 @@ timestamp_status(char *timestampdir, char *timestampfile, char *user, int flags)
 	    status = TS_MISSING;
 	}
     } else if (errno != ENOENT) {
-	log_error(NO_EXIT|USE_ERRNO, _("unable to stat %s"), dirparent);
+	log_error(USE_ERRNO, _("unable to stat %s"), dirparent);
     } else {
 	/* No dirparent, try to make one. */
 	if (ISSET(flags, TS_MAKE_DIRS)) {
 	    if (mkdir(dirparent, S_IRWXU))
-		log_error(NO_EXIT|USE_ERRNO, _("unable to mkdir %s"),
+		log_error(USE_ERRNO, _("unable to mkdir %s"),
 		    dirparent);
 	    else
 		status = TS_MISSING;
@@ -495,14 +533,14 @@ timestamp_status(char *timestampdir, char *timestampfile, char *user, int flags)
 		if (unlink(timestampdir) == 0)
 		    status = TS_MISSING;
 	    } else
-		log_error(NO_EXIT, _("%s exists but is not a directory (0%o)"),
+		log_error(0, _("%s exists but is not a directory (0%o)"),
 		    timestampdir, (unsigned int) sb.st_mode);
 	} else if (sb.st_uid != timestamp_uid)
-	    log_error(NO_EXIT, _("%s owned by uid %u, should be uid %u"),
+	    log_error(0, _("%s owned by uid %u, should be uid %u"),
 		timestampdir, (unsigned int) sb.st_uid,
 		(unsigned int) timestamp_uid);
 	else if ((sb.st_mode & 0000022))
-	    log_error(NO_EXIT,
+	    log_error(0,
 		_("%s writable by non-owner (0%o), should be mode 0700"),
 		timestampdir, (unsigned int) sb.st_mode);
 	else {
@@ -511,7 +549,7 @@ timestamp_status(char *timestampdir, char *timestampfile, char *user, int flags)
 	    status = TS_OLD;		/* do date check later */
 	}
     } else if (errno != ENOENT) {
-	log_error(NO_EXIT|USE_ERRNO, _("unable to stat %s"), timestampdir);
+	log_error(USE_ERRNO, _("unable to stat %s"), timestampdir);
     } else
 	status = TS_MISSING;
 
@@ -522,7 +560,7 @@ timestamp_status(char *timestampdir, char *timestampfile, char *user, int flags)
     if (status == TS_MISSING && timestampfile && ISSET(flags, TS_MAKE_DIRS)) {
 	if (mkdir(timestampdir, S_IRWXU) == -1) {
 	    status = TS_ERROR;
-	    log_error(NO_EXIT|USE_ERRNO, _("unable to mkdir %s"), timestampdir);
+	    log_error(USE_ERRNO, _("unable to mkdir %s"), timestampdir);
 	}
     }
 
@@ -537,18 +575,18 @@ timestamp_status(char *timestampdir, char *timestampfile, char *user, int flags)
 	if (lstat(timestampfile, &sb) == 0) {
 	    if (!S_ISREG(sb.st_mode)) {
 		status = TS_ERROR;
-		log_error(NO_EXIT, _("%s exists but is not a regular file (0%o)"),
+		log_error(0, _("%s exists but is not a regular file (0%o)"),
 		    timestampfile, (unsigned int) sb.st_mode);
 	    } else {
 		/* If bad uid or file mode, complain and kill the bogus file. */
 		if (sb.st_uid != timestamp_uid) {
-		    log_error(NO_EXIT,
+		    log_error(0,
 			_("%s owned by uid %u, should be uid %u"),
 			timestampfile, (unsigned int) sb.st_uid,
 			(unsigned int) timestamp_uid);
 		    (void) unlink(timestampfile);
 		} else if ((sb.st_mode & 0000022)) {
-		    log_error(NO_EXIT,
+		    log_error(0,
 			_("%s writable by non-owner (0%o), should be mode 0600"),
 			timestampfile, (unsigned int) sb.st_mode);
 		    (void) unlink(timestampfile);
@@ -579,7 +617,7 @@ timestamp_status(char *timestampdir, char *timestampfile, char *user, int flags)
 		}
 	    }
 	} else if (errno != ENOENT) {
-	    log_error(NO_EXIT|USE_ERRNO, _("unable to stat %s"), timestampfile);
+	    log_error(USE_ERRNO, _("unable to stat %s"), timestampfile);
 	    status = TS_ERROR;
 	}
     }
@@ -602,7 +640,7 @@ timestamp_status(char *timestampdir, char *timestampfile, char *user, int flags)
 		 */
 		if (mtime.tv_sec > now + 60 * def_timestamp_timeout * 2) {
 		    time_t tv_sec = (time_t)mtime.tv_sec;
-		    log_error(NO_EXIT,
+		    log_error(0,
 			_("timestamp too far in the future: %20.20s"),
 			4 + ctime(&tv_sec));
 		    if (timestampfile)
@@ -622,21 +660,22 @@ timestamp_status(char *timestampdir, char *timestampfile, char *user, int flags)
 done:
     if (timestamp_uid != 0)
 	restore_perms();
-    return status;
+    debug_return_int(status);
 }
 
 /*
  * Remove the timestamp ticket file/dir.
  */
 void
-remove_timestamp(int remove)
+remove_timestamp(bool remove)
 {
     struct timeval tv;
     char *timestampdir, *timestampfile, *path;
     int status;
+    debug_decl(remove_timestamp, SUDO_DEBUG_AUTH)
 
     if (build_timestamp(&timestampdir, &timestampfile) == -1)
-	return;
+	debug_return;
 
     status = timestamp_status(timestampdir, timestampfile, user_name,
 	TS_REMOVE);
@@ -648,10 +687,10 @@ remove_timestamp(int remove)
 	    else
 		status = rmdir(timestampdir);
 	    if (status == -1 && errno != ENOENT) {
-		log_error(NO_EXIT,
+		log_error(0,
 		    _("unable to remove %s (%s), will reset to the epoch"),
 		    path, strerror(errno));
-		remove = FALSE;
+		remove = false;
 	    }
 	}
 	if (!remove) {
@@ -660,25 +699,27 @@ remove_timestamp(int remove)
 		error(1, _("unable to reset %s to the epoch"), path);
 	}
     }
-
     efree(timestampdir);
     efree(timestampfile);
+
+    debug_return;
 }
 
 /*
- * Returns TRUE if tty lives on a devpts or /devices filesystem, else FALSE.
- * Unlike most filesystems, the ctime of devpts nodes is not updated when
- * the device node is written to, only when the inode's status changes,
+ * Returns true if tty lives on a devpts, /dev or /devices filesystem, else
+ * false.  Unlike most filesystems, the ctime of devpts nodes is not updated
+ * when the device node is written to, only when the inode's status changes,
  * typically via the chmod, chown, link, rename, or utimes system calls.
  * Since the ctime is "stable" in this case, we can stash it the tty ticket
  * file and use it to determine whether the tty ticket file is stale.
  */
-static int
+static bool
 tty_is_devpts(const char *tty)
 {
-    int retval = FALSE;
+    bool retval = false;
 #ifdef __linux__
     struct statfs sfs;
+    debug_decl(tty_is_devpts, SUDO_DEBUG_PTY)
 
 #ifndef DEVPTS_SUPER_MAGIC
 # define DEVPTS_SUPER_MAGIC 0x1cd1
@@ -686,17 +727,20 @@ tty_is_devpts(const char *tty)
 
     if (statfs(tty, &sfs) == 0) {
 	if (sfs.f_type == DEVPTS_SUPER_MAGIC)
-	    retval = TRUE;
+	    retval = true;
     }
 #elif defined(__sun) && defined(__SVR4)
     struct statvfs sfs;
+    debug_decl(tty_is_devpts, SUDO_DEBUG_PTY)
 
     if (statvfs(tty, &sfs) == 0) {
-	if (strcmp(sfs.f_fstr, "devices") == 0)
-	    retval = TRUE;
+	if (strcmp(sfs.f_fstr, "dev") == 0 || strcmp(sfs.f_fstr, "devices") == 0)
+	    retval = true;
     }
+#else
+    debug_decl(tty_is_devpts, SUDO_DEBUG_PTY)
 #endif /* __linux__ */
-    return retval;
+    debug_return_bool(retval);
 }
 
 /*
@@ -708,23 +752,24 @@ static struct passwd *
 get_authpw(void)
 {
     struct passwd *pw;
+    debug_decl(get_authpw, SUDO_DEBUG_AUTH)
 
     if (def_rootpw) {
 	if ((pw = sudo_getpwuid(ROOT_UID)) == NULL)
-	    log_error(0, _("unknown uid: %u"), ROOT_UID);
+	    log_fatal(0, _("unknown uid: %u"), ROOT_UID);
     } else if (def_runaspw) {
 	if ((pw = sudo_getpwnam(def_runas_default)) == NULL)
-	    log_error(0, _("unknown user: %s"), def_runas_default);
+	    log_fatal(0, _("unknown user: %s"), def_runas_default);
     } else if (def_targetpw) {
 	if (runas_pw->pw_name == NULL)
-	    log_error(NO_MAIL|MSG_ONLY, _("unknown uid: %u"),
+	    log_fatal(NO_MAIL|MSG_ONLY, _("unknown uid: %u"),
 		(unsigned int) runas_pw->pw_uid);
-	pw_addref(runas_pw);
+	sudo_pw_addref(runas_pw);
 	pw = runas_pw;
     } else {
-	pw_addref(sudo_user.pw);
+	sudo_pw_addref(sudo_user.pw);
 	pw = sudo_user.pw;
     }
 
-    return pw;
+    debug_return_ptr(pw);
 }

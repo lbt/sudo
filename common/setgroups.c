@@ -32,16 +32,19 @@
 # include <unistd.h>
 #endif /* HAVE_UNISTD_H */
 #include <errno.h>
+#include <grp.h>
 #include <limits.h>
 
 #include "missing.h"
+#include "sudo_debug.h"
 
 int
 sudo_setgroups(int ngids, const GETGROUPS_T *gids)
 {
     int maxgids, rval;
+    debug_decl(sudo_setgroups, SUDO_DEBUG_UTIL)
 
-    rval = setgroups(ngids, gids);
+    rval = setgroups(ngids, (GETGROUPS_T *)gids);
     if (rval == -1 && errno == EINVAL) {
 	/* Too many groups, try again with fewer. */
 #if defined(HAVE_SYSCONF) && defined(_SC_NGROUPS_MAX)
@@ -50,7 +53,7 @@ sudo_setgroups(int ngids, const GETGROUPS_T *gids)
 #endif
 	    maxgids = NGROUPS_MAX;
 	if (ngids > maxgids)
-	    rval = setgroups(maxgids, gids);
+	    rval = setgroups(maxgids, (GETGROUPS_T *)gids);
     }
-    return rval;
+    debug_return_int(rval);
 }

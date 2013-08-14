@@ -29,26 +29,44 @@
  * Macros and functions that may be missing on some operating systems.
  */
 
-/* Define away __attribute__ for non-gcc or old gcc */
-#if !defined(__GNUC__) || __GNUC__ < 2 || __GNUC__ == 2 && __GNUC_MINOR__ < 5
-# define __attribute__(x)
+#ifndef __GNUC_PREREQ__
+# ifdef __GNUC__
+#  define __GNUC_PREREQ__(ma, mi) \
+	((__GNUC__ > (ma)) || (__GNUC__ == (ma) && __GNUC_MINOR__ >= (mi)))
+# else
+#  define __GNUC_PREREQ__(ma, mi)	0
+# endif
 #endif
 
-/* For silencing gcc warnings about rcsids */
-#ifndef __unused
-# if defined(__GNUC__) && (__GNUC__ > 2 || __GNUC__ == 2 && __GNUC_MINOR__ > 7)
-#  define __unused	__attribute__((__unused__))
-# else
-#  define __unused
-# endif
+/* Define away __attribute__ for non-gcc or old gcc */
+#if !defined(__attribute__) && !__GNUC_PREREQ__(2, 5)
+# define __attribute__(x)
 #endif
 
 /* For catching format string mismatches */
 #ifndef __printflike
-# if defined(__GNUC__) && (__GNUC__ > 2 || __GNUC__ == 2 && __GNUC_MINOR__ >= 7)
+# if __GNUC_PREREQ__(2, 7)
 #  define __printflike(f, v) 	__attribute__((__format__ (__printf__, f, v)))
 # else
 #  define __printflike(f, v)
+# endif
+#endif
+
+#ifndef __dso_public
+# ifdef HAVE_DSO_VISIBILITY
+#  if defined(__GNUC__)
+#   define __dso_public	__attribute__((__visibility__("default")))
+#   define __dso_hidden	__attribute__((__visibility__("hidden")))
+#  elif defined(__SUNPRO_C)
+#   define __dso_public	__global
+#   define __dso_hidden __hidden
+#  else
+#   define __dso_public	__declspec(dllexport)
+#   define __dso_hidden
+#  endif
+# else
+#  define __dso_public
+#  define __dso_hidden
 # endif
 #endif
 
@@ -132,6 +150,17 @@
 #endif
 
 /*
+ * Older systems may be missing stddef.h and/or offsetof macro
+ */
+#ifndef offsetof
+# ifdef __offsetof
+#  define offsetof(type, field) __offsetof(type, field)
+# else
+#  define offsetof(type, field) ((size_t)(&((type *)0)->field))
+# endif
+#endif
+
+/*
  * Simple isblank() macro and function for systems without it.
  */
 #ifndef HAVE_ISBLANK
@@ -202,6 +231,13 @@ void setprogname(const char *);
 #endif /* HAVE___PROGNAME */
 #endif /* !HAVE_GETPROGNAME */
 
+/*
+ * Declare errno if errno.h doesn't do it for us.
+ */
+#if defined(HAVE_DECL_ERRNO) && !HAVE_DECL_ERRNO
+extern int errno;
+#endif /* !HAVE_DECL_ERRNO */
+
 #ifndef timevalclear
 # define timevalclear(tv)	((tv)->tv_sec = (tv)->tv_usec = 0)
 #endif
@@ -246,6 +282,11 @@ void setprogname(const char *);
 # else
 #  define NSIG 64
 # endif
+#endif
+
+/* For sig2str() */
+#ifndef SIG2STR_MAX
+# define SIG2STR_MAX 32
 #endif
 
 #ifndef WCOREDUMP
@@ -328,6 +369,9 @@ int mkstemps(char *, int);
 #ifndef HAVE_NANOSLEEP
 int nanosleep(const struct timespec *, struct timespec *);
 #endif
+#ifndef HAVE_PW_DUP
+struct passwd *pw_dup(const struct passwd *);
+#endif
 #ifndef HAVE_SETENV
 int setenv(const char *, const char *, int);
 #endif
@@ -336,6 +380,9 @@ int unsetenv(const char *);
 #endif
 #ifndef HAVE_STRSIGNAL
 char *strsignal(int);
+#endif
+#ifndef HAVE_SIG2STR
+int sig2str(int, char *);
 #endif
 
 #endif /* _SUDO_MISSING_H */

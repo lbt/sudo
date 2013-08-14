@@ -240,11 +240,7 @@ struct sudo_defs_types sudo_defs_table[] = {
 	def_data_verifypw,
     }, {
 	"noexec", T_FLAG,
-	N_("Preload the dummy exec functions contained in 'noexec_file'"),
-	NULL,
-    }, {
-	"noexec_file", T_STR|T_PATH,
-	N_("File containing dummy exec functions: %s"),
+	N_("Preload the dummy exec functions contained in the sudo_noexec library"),
 	NULL,
     }, {
 	"ignore_local_sudoers", T_FLAG,
@@ -296,7 +292,7 @@ struct sudo_defs_types sudo_defs_table[] = {
 	NULL,
     }, {
 	"visiblepw", T_FLAG,
-	N_("Allow sudo to prompt for a password even if it would be visisble"),
+	N_("Allow sudo to prompt for a password even if it would be visible"),
 	NULL,
     }, {
 	"pwfeedback", T_FLAG,
@@ -328,15 +324,15 @@ struct sudo_defs_types sudo_defs_table[] = {
 	NULL,
     }, {
 	"group_plugin", T_STR,
-	N_("Plugin for non-Unix group support"),
+	N_("Plugin for non-Unix group support: %s"),
 	NULL,
     }, {
 	"iolog_dir", T_STR|T_PATH,
-	N_("Directory in which to store input/output logs"),
+	N_("Directory in which to store input/output logs: %s"),
 	NULL,
     }, {
 	"iolog_file", T_STR,
-	N_("File in which to store the input/output log"),
+	N_("File in which to store the input/output log: %s"),
 	NULL,
     }, {
 	"set_utmp", T_FLAG,
@@ -345,6 +341,14 @@ struct sudo_defs_types sudo_defs_table[] = {
     }, {
 	"utmp_runas", T_FLAG,
 	N_("Set the user in utmp to the runas user, not the invoking user"),
+	NULL,
+    }, {
+	"privs", T_STR,
+	N_("Set of permitted privileges"),
+	NULL,
+    }, {
+	"limitprivs", T_STR,
+	N_("Set of limit privileges"),
 	NULL,
     }, {
 	NULL, 0, NULL

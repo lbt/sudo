@@ -61,12 +61,6 @@ static void handler(int);
 static char *getln(int, char *, size_t, int);
 static char *sudo_askpass(const char *, const char *);
 
-#ifdef _PATH_SUDO_ASKPASS
-const char *askpass_path = _PATH_SUDO_ASKPASS;
-#else
-const char *askpass_path;
-#endif
-
 /*
  * Like getpass(3) but with timeout and echo flags.
  */
@@ -79,21 +73,22 @@ tgetpass(const char *prompt, int timeout, int flags)
     static const char *askpass;
     static char buf[SUDO_PASS_MAX + 1];
     int i, input, output, save_errno, neednl = 0, need_restart;
+    debug_decl(tgetpass, SUDO_DEBUG_CONV)
 
     (void) fflush(stdout);
 
     if (askpass == NULL) {
-	askpass = getenv("SUDO_ASKPASS");
+	askpass = getenv_unhooked("SUDO_ASKPASS");
 	if (askpass == NULL || *askpass == '\0')
-	    askpass = askpass_path;
+	    askpass = sudo_conf_askpass_path();
     }
 
     /* If no tty present and we need to disable echo, try askpass. */
     if (!ISSET(flags, TGP_STDIN|TGP_ECHO|TGP_ASKPASS|TGP_NOECHO_TRY) &&
 	!tty_present()) {
-	if (askpass == NULL || getenv("DISPLAY") == NULL) {
+	if (askpass == NULL || getenv_unhooked("DISPLAY") == NULL) {
 	    warningx(_("no tty present and no askpass program specified"));
-	    return NULL;
+	    debug_return_str(NULL);
 	}
 	SET(flags, TGP_ASKPASS);
     }
@@ -102,7 +97,7 @@ tgetpass(const char *prompt, int timeout, int flags)
     if (ISSET(flags, TGP_ASKPASS)) {
 	if (askpass == NULL || *askpass == '\0')
 	    errorx(1, _("no askpass program specified, try setting SUDO_ASKPASS"));
-	return sudo_askpass(askpass, prompt);
+	debug_return_str_masked(sudo_askpass(askpass, prompt));
     }
 
 restart:
@@ -203,7 +198,8 @@ restore:
 
     if (save_errno)
 	errno = save_errno;
-    return pass;
+
+    debug_return_str_masked(pass);
 }
 
 /*
@@ -216,6 +212,7 @@ sudo_askpass(const char *askpass, const char *prompt)
     sigaction_t sa, saved_sa_pipe;
     int pfd[2];
     pid_t pid;
+    debug_decl(sudo_askpass, SUDO_DEBUG_CONV)
 
     if (pipe(pfd) == -1)
 	error(1, _("unable to create pipe"));
@@ -257,7 +254,10 @@ sudo_askpass(const char *askpass, const char *prompt)
     (void) close(pfd[0]);
     (void) sigaction(SIGPIPE, &saved_sa_pipe, NULL);
 
-    return pass;
+    if (pass == NULL)
+	errno = EINTR;	/* make cancel button simulate ^C */
+
+    debug_return_str_masked(pass);
 }
 
 extern int term_erase, term_kill;
@@ -269,10 +269,11 @@ getln(int fd, char *buf, size_t bufsiz, int feedback)
     ssize_t nr = -1;
     char *cp = buf;
     char c = '\0';
+    debug_decl(getln, SUDO_DEBUG_CONV)
 
     if (left == 0) {
 	errno = EINVAL;
-	return NULL;			/* sanity */
+	debug_return_str(NULL);		/* sanity */
     }
 
     while (--left) {
@@ -297,8 +298,7 @@ getln(int fd, char *buf, size_t bufsiz, int feedback)
 		}
 		continue;
 	    }
-	    if (write(fd, "*", 1) == -1)
-		/* shut up glibc */;
+	    ignore_result(write(fd, "*", 1));
 	}
 	*cp++ = c;
     }
@@ -312,7 +312,7 @@ getln(int fd, char *buf, size_t bufsiz, int feedback)
 	}
     }
 
-    return nr == 1 ? buf : NULL;
+    debug_return_str_masked(nr == 1 ? buf : NULL);
 }
 
 static void
@@ -326,8 +326,9 @@ int
 tty_present(void)
 {
     int fd;
+    debug_decl(tty_present, SUDO_DEBUG_UTIL)
 
     if ((fd = open(_PATH_TTY, O_RDWR|O_NOCTTY)) != -1)
 	close(fd);
-    return fd != -1;
+    debug_return_bool(fd != -1);
 }

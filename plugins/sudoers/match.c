@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 1998-2005, 2007-2011
+ * Copyright (c) 1996, 1998-2005, 2007-2012
  *	Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -25,7 +25,6 @@
 
 #include <sys/types.h>
 #include <sys/param.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
 #include <stdio.h>
 #ifdef STDC_HEADERS
@@ -48,17 +47,15 @@
 #ifdef HAVE_FNMATCH
 # include <fnmatch.h>
 #endif /* HAVE_FNMATCH */
-#ifdef HAVE_EXTENDED_GLOB
+#ifdef HAVE_GLOB
 # include <glob.h>
-#endif /* HAVE_EXTENDED_GLOB */
+#endif /* HAVE_GLOB */
 #ifdef HAVE_NETGROUP_H
 # include <netgroup.h>
 #endif /* HAVE_NETGROUP_H */
 #include <ctype.h>
 #include <pwd.h>
 #include <grp.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 #include <netdb.h>
 #ifdef HAVE_DIRENT_H
 # include <dirent.h>
@@ -78,26 +75,25 @@
 #endif
 
 #include "sudoers.h"
-#include "interfaces.h"
 #include "parse.h"
 #include <gram.h>
 
 #ifndef HAVE_FNMATCH
 # include "compat/fnmatch.h"
 #endif /* HAVE_FNMATCH */
-#ifndef HAVE_EXTENDED_GLOB
+#ifndef HAVE_GLOB
 # include "compat/glob.h"
-#endif /* HAVE_EXTENDED_GLOB */
+#endif /* HAVE_GLOB */
 
 static struct member_list empty;
 
-static int command_matches_dir(char *, size_t);
-static int command_matches_glob(char *, char *);
-static int command_matches_fnmatch(char *, char *);
-static int command_matches_normal(char *, char *);
+static bool command_matches_dir(char *, size_t);
+static bool command_matches_glob(char *, char *);
+static bool command_matches_fnmatch(char *, char *);
+static bool command_matches_normal(char *, char *);
 
 /*
- * Returns TRUE if string 's' contains meta characters.
+ * Returns true if string 's' contains meta characters.
  */
 #define has_meta(s)	(strpbrk(s, "\\?*[]") != NULL)
 
@@ -111,6 +107,7 @@ _userlist_matches(struct passwd *pw, struct member_list *list)
     struct member *m;
     struct alias *a;
     int rval, matched = UNSPEC;
+    debug_decl(_userlist_matches, SUDO_DEBUG_MATCH)
 
     tq_foreach_rev(list, m) {
 	switch (m->type) {
@@ -141,7 +138,7 @@ _userlist_matches(struct passwd *pw, struct member_list *list)
 	if (matched != UNSPEC)
 	    break;
     }
-    return matched;
+    debug_return_bool(matched);
 }
 
 int
@@ -157,18 +154,21 @@ userlist_matches(struct passwd *pw, struct member_list *list)
  * Returns ALLOW, DENY or UNSPEC.
  */
 static int
-_runaslist_matches(struct member_list *user_list, struct member_list *group_list)
+_runaslist_matches(struct member_list *user_list,
+    struct member_list *group_list, struct member **matching_user,
+    struct member **matching_group)
 {
     struct member *m;
     struct alias *a;
     int rval;
     int user_matched = UNSPEC;
     int group_matched = UNSPEC;
+    debug_decl(_runaslist_matches, SUDO_DEBUG_MATCH)
 
     if (runas_pw != NULL) {
 	/* If no runas user or runas group listed in sudoers, use default. */
 	if (tq_empty(user_list) && tq_empty(group_list))
-	    return userpw_matches(def_runas_default, runas_pw->pw_name, runas_pw);
+	    debug_return_int(userpw_matches(def_runas_default, runas_pw->pw_name, runas_pw));
 
 	tq_foreach_rev(user_list, m) {
 	    switch (m->type) {
@@ -185,7 +185,8 @@ _runaslist_matches(struct member_list *user_list, struct member_list *group_list
 		    break;
 		case ALIAS:
 		    if ((a = alias_find(m->name, RUNASALIAS)) != NULL) {
-			rval = _runaslist_matches(&a->members, &empty);
+			rval = _runaslist_matches(&a->members, &empty,
+			    matching_user, NULL);
 			if (rval != UNSPEC)
 			    user_matched = m->negated ? !rval : rval;
 			break;
@@ -195,9 +196,17 @@ _runaslist_matches(struct member_list *user_list, struct member_list *group_list
 		    if (userpw_matches(m->name, runas_pw->pw_name, runas_pw))
 			user_matched = !m->negated;
 		    break;
+		case MYSELF:
+		    if (!ISSET(sudo_user.flags, RUNAS_USER_SPECIFIED) ||
+			strcmp(user_name, runas_pw->pw_name) == 0)
+			user_matched = !m->negated;
+		    break;
 	    }
-	    if (user_matched != UNSPEC)
+	    if (user_matched != UNSPEC) {
+		if (matching_user != NULL && m->type != ALIAS)
+		    *matching_user = m;
 		break;
+	    }
 	}
     }
 
@@ -213,7 +222,8 @@ _runaslist_matches(struct member_list *user_list, struct member_list *group_list
 		    break;
 		case ALIAS:
 		    if ((a = alias_find(m->name, RUNASALIAS)) != NULL) {
-			rval = _runaslist_matches(&a->members, &empty);
+			rval = _runaslist_matches(&empty, &a->members,
+			    NULL, matching_group);
 			if (rval != UNSPEC)
 			    group_matched = m->negated ? !rval : rval;
 			break;
@@ -224,8 +234,11 @@ _runaslist_matches(struct member_list *user_list, struct member_list *group_list
 			group_matched = !m->negated;
 		    break;
 	    }
-	    if (group_matched != UNSPEC)
+	    if (group_matched != UNSPEC) {
+		if (matching_group != NULL && m->type != ALIAS)
+		    *matching_group = m;
 		break;
+	    }
 	}
 	if (group_matched == UNSPEC) {
 	    if (runas_pw != NULL && runas_pw->pw_gid == runas_gr->gr_gid)
@@ -234,18 +247,20 @@ _runaslist_matches(struct member_list *user_list, struct member_list *group_list
     }
 
     if (user_matched == DENY || group_matched == DENY)
-	return DENY;
+	debug_return_int(DENY);
     if (user_matched == group_matched || runas_gr == NULL)
-	return user_matched;
-    return UNSPEC;
+	debug_return_int(user_matched);
+    debug_return_int(UNSPEC);
 }
 
 int
-runaslist_matches(struct member_list *user_list, struct member_list *group_list)
+runaslist_matches(struct member_list *user_list,
+    struct member_list *group_list, struct member **matching_user,
+    struct member **matching_group)
 {
     alias_seqno++;
     return _runaslist_matches(user_list ? user_list : &empty,
-	group_list ? group_list : &empty);
+	group_list ? group_list : &empty, matching_user, matching_group);
 }
 
 /*
@@ -258,6 +273,7 @@ _hostlist_matches(struct member_list *list)
     struct member *m;
     struct alias *a;
     int rval, matched = UNSPEC;
+    debug_decl(_hostlist_matches, SUDO_DEBUG_MATCH)
 
     tq_foreach_rev(list, m) {
 	switch (m->type) {
@@ -288,7 +304,7 @@ _hostlist_matches(struct member_list *list)
 	if (matched != UNSPEC)
 	    break;
     }
-    return matched;
+    debug_return_bool(matched);
 }
 
 int
@@ -307,13 +323,14 @@ _cmndlist_matches(struct member_list *list)
 {
     struct member *m;
     int matched = UNSPEC;
+    debug_decl(_cmndlist_matches, SUDO_DEBUG_MATCH)
 
     tq_foreach_rev(list, m) {
 	matched = cmnd_matches(m);
 	if (matched != UNSPEC)
 	    break;
     }
-    return matched;
+    debug_return_bool(matched);
 }
 
 int
@@ -333,6 +350,7 @@ cmnd_matches(struct member *m)
     struct alias *a;
     struct sudo_command *c;
     int rval, matched = UNSPEC;
+    debug_decl(cmnd_matches, SUDO_DEBUG_MATCH)
 
     switch (m->type) {
 	case ALL:
@@ -352,15 +370,16 @@ cmnd_matches(struct member *m)
 		matched = !m->negated;
 	    break;
     }
-    return matched;
+    debug_return_bool(matched);
 }
 
-static int
+static bool
 command_args_match(sudoers_cmnd, sudoers_args)
     char *sudoers_cmnd;
     char *sudoers_args;
 {
     int flags = 0;
+    debug_decl(command_args_match, SUDO_DEBUG_MATCH)
 
     /*
      * If no args specified in sudoers, any user args are allowed.
@@ -368,7 +387,7 @@ command_args_match(sudoers_cmnd, sudoers_args)
      */
     if (!sudoers_args ||
 	(!user_args && sudoers_args && !strcmp("\"\"", sudoers_args)))
-	return TRUE;
+	debug_return_bool(true);
     /*
      * If args are specified in sudoers, they must match the user args.
      * If running as sudoedit, all args are assumed to be paths.
@@ -378,18 +397,20 @@ command_args_match(sudoers_cmnd, sudoers_args)
 	if (strcmp(sudoers_cmnd, "sudoedit") == 0)
 	    flags = FNM_PATHNAME;
 	if (fnmatch(sudoers_args, user_args ? user_args : "", flags) == 0)
-	    return TRUE;
+	    debug_return_bool(true);
     }
-    return FALSE;
+    debug_return_bool(false);
 }
 
 /*
- * If path doesn't end in /, return TRUE iff cmnd & path name the same inode;
- * otherwise, return TRUE if user_cmnd names one of the inodes in path.
+ * If path doesn't end in /, return true iff cmnd & path name the same inode;
+ * otherwise, return true if user_cmnd names one of the inodes in path.
  */
-int
+bool
 command_matches(char *sudoers_cmnd, char *sudoers_args)
 {
+    debug_decl(command_matches, SUDO_DEBUG_MATCH)
+
     /* Check for pseudo-commands */
     if (sudoers_cmnd[0] != '/') {
 	/*
@@ -400,13 +421,13 @@ command_matches(char *sudoers_cmnd, char *sudoers_args)
 	 */
 	if (strcmp(sudoers_cmnd, "sudoedit") != 0 ||
 	    strcmp(user_cmnd, "sudoedit") != 0)
-	    return FALSE;
+	    debug_return_bool(false);
 	if (command_args_match(sudoers_cmnd, sudoers_args)) {
 	    efree(safe_cmnd);
 	    safe_cmnd = estrdup(sudoers_cmnd);
-	    return TRUE;
+	    debug_return_bool(true);
 	} else
-	    return FALSE;
+	    debug_return_bool(false);
     }
 
     if (has_meta(sudoers_cmnd)) {
@@ -415,15 +436,17 @@ command_matches(char *sudoers_cmnd, char *sudoers_args)
 	 * use glob(3) and/or fnmatch(3) to do the matching.
 	 */
 	if (def_fast_glob)
-	    return command_matches_fnmatch(sudoers_cmnd, sudoers_args);
-	return command_matches_glob(sudoers_cmnd, sudoers_args);
+	    debug_return_bool(command_matches_fnmatch(sudoers_cmnd, sudoers_args));
+	debug_return_bool(command_matches_glob(sudoers_cmnd, sudoers_args));
     }
-    return command_matches_normal(sudoers_cmnd, sudoers_args);
+    debug_return_bool(command_matches_normal(sudoers_cmnd, sudoers_args));
 }
 
-static int
+static bool
 command_matches_fnmatch(char *sudoers_cmnd, char *sudoers_args)
 {
+    debug_decl(command_matches_fnmatch, SUDO_DEBUG_MATCH)
+
     /*
      * Return true if fnmatch(3) succeeds AND
      *  a) there are no args in sudoers OR
@@ -432,23 +455,24 @@ command_matches_fnmatch(char *sudoers_cmnd, char *sudoers_args)
      * else return false.
      */
     if (fnmatch(sudoers_cmnd, user_cmnd, FNM_PATHNAME) != 0)
-	return FALSE;
+	debug_return_bool(false);
     if (command_args_match(sudoers_cmnd, sudoers_args)) {
 	if (safe_cmnd)
 	    free(safe_cmnd);
 	safe_cmnd = estrdup(user_cmnd);
-	return TRUE;
-    } else
-	return FALSE;
+	debug_return_bool(true);
+    }
+    debug_return_bool(false);
 }
 
-static int
+static bool
 command_matches_glob(char *sudoers_cmnd, char *sudoers_args)
 {
     struct stat sudoers_stat;
     size_t dlen;
     char **ap, *base, *cp;
     glob_t gl;
+    debug_decl(command_matches_glob, SUDO_DEBUG_MATCH)
 
     /*
      * First check to see if we can avoid the call to glob(3).
@@ -460,7 +484,7 @@ command_matches_glob(char *sudoers_cmnd, char *sudoers_args)
 	if ((base = strrchr(sudoers_cmnd, '/')) != NULL) {
 	    base++;
 	    if (!has_meta(base) && strcmp(user_base, base) != 0)
-		return FALSE;
+		debug_return_bool(false);
 	}
     }
     /*
@@ -470,10 +494,9 @@ command_matches_glob(char *sudoers_cmnd, char *sudoers_args)
      *  c) there are args in sudoers and on command line and they match
      * else return false.
      */
-#define GLOB_FLAGS	(GLOB_NOSORT | GLOB_MARK | GLOB_BRACE | GLOB_TILDE)
-    if (glob(sudoers_cmnd, GLOB_FLAGS, NULL, &gl) != 0 || gl.gl_pathc == 0) {
+    if (glob(sudoers_cmnd, GLOB_NOSORT, NULL, &gl) != 0 || gl.gl_pathc == 0) {
 	globfree(&gl);
-	return FALSE;
+	debug_return_bool(false);
     }
     /* For each glob match, compare basename, st_dev and st_ino. */
     for (ap = gl.gl_pathv; (cp = *ap) != NULL; ap++) {
@@ -481,7 +504,7 @@ command_matches_glob(char *sudoers_cmnd, char *sudoers_args)
 	dlen = strlen(cp);
 	if (cp[dlen - 1] == '/') {
 	    if (command_matches_dir(cp, dlen))
-		return TRUE;
+		debug_return_bool(true);
 	    continue;
 	}
 
@@ -503,27 +526,28 @@ command_matches_glob(char *sudoers_cmnd, char *sudoers_args)
     }
     globfree(&gl);
     if (cp == NULL)
-	return FALSE;
+	debug_return_bool(false);
 
     if (command_args_match(sudoers_cmnd, sudoers_args)) {
 	efree(safe_cmnd);
 	safe_cmnd = estrdup(user_cmnd);
-	return TRUE;
+	debug_return_bool(true);
     }
-    return FALSE;
+    debug_return_bool(false);
 }
 
-static int
+static bool
 command_matches_normal(char *sudoers_cmnd, char *sudoers_args)
 {
     struct stat sudoers_stat;
     char *base;
     size_t dlen;
+    debug_decl(command_matches_normal, SUDO_DEBUG_MATCH)
 
     /* If it ends in '/' it is a directory spec. */
     dlen = strlen(sudoers_cmnd);
     if (sudoers_cmnd[dlen - 1] == '/')
-	return command_matches_dir(sudoers_cmnd, dlen);
+	debug_return_bool(command_matches_dir(sudoers_cmnd, dlen));
 
     /* Only proceed if user_base and basename(sudoers_cmnd) match */
     if ((base = strrchr(sudoers_cmnd, '/')) == NULL)
@@ -532,7 +556,7 @@ command_matches_normal(char *sudoers_cmnd, char *sudoers_args)
 	base++;
     if (strcmp(user_base, base) != 0 ||
 	stat(sudoers_cmnd, &sudoers_stat) == -1)
-	return FALSE;
+	debug_return_bool(false);
 
     /*
      * Return true if inode/device matches AND
@@ -543,36 +567,37 @@ command_matches_normal(char *sudoers_cmnd, char *sudoers_args)
     if (user_stat != NULL &&
 	(user_stat->st_dev != sudoers_stat.st_dev ||
 	user_stat->st_ino != sudoers_stat.st_ino))
-	return FALSE;
+	debug_return_bool(false);
     if (command_args_match(sudoers_cmnd, sudoers_args)) {
 	efree(safe_cmnd);
 	safe_cmnd = estrdup(sudoers_cmnd);
-	return TRUE;
+	debug_return_bool(true);
     }
-    return FALSE;
+    debug_return_bool(false);
 }
 
 /*
- * Return TRUE if user_cmnd names one of the inodes in dir, else FALSE.
+ * Return true if user_cmnd names one of the inodes in dir, else false.
  */
-static int
+static bool
 command_matches_dir(char *sudoers_dir, size_t dlen)
 {
     struct stat sudoers_stat;
     struct dirent *dent;
     char buf[PATH_MAX];
     DIR *dirp;
+    debug_decl(command_matches_dir, SUDO_DEBUG_MATCH)
 
     /*
      * Grot through directory entries, looking for user_base.
      */
     dirp = opendir(sudoers_dir);
     if (dirp == NULL)
-	return FALSE;
+	debug_return_bool(false);
 
     if (strlcpy(buf, sudoers_dir, sizeof(buf)) >= sizeof(buf)) {
 	closedir(dirp);
-	return FALSE;
+	debug_return_bool(false);
     }
     while ((dent = readdir(dirp)) != NULL) {
 	/* ignore paths > PATH_MAX (XXX - log) */
@@ -594,206 +619,74 @@ command_matches_dir(char *sudoers_dir, size_t dlen)
     }
 
     closedir(dirp);
-    return dent != NULL;
-}
-
-static int
-addr_matches_if(char *n)
-{
-    union sudo_in_addr_un addr;
-    struct interface *ifp;
-#ifdef HAVE_IN6_ADDR
-    int j;
-#endif
-    int family;
-
-#ifdef HAVE_IN6_ADDR
-    if (inet_pton(AF_INET6, n, &addr.ip6) > 0) {
-	family = AF_INET6;
-    } else
-#endif
-    {
-	family = AF_INET;
-	addr.ip4.s_addr = inet_addr(n);
-    }
-
-    for (ifp = interfaces; ifp != NULL; ifp = ifp->next) {
-	if (ifp->family != family)
-	    continue;
-	switch(family) {
-	    case AF_INET:
-		if (ifp->addr.ip4.s_addr == addr.ip4.s_addr ||
-		    (ifp->addr.ip4.s_addr & ifp->netmask.ip4.s_addr)
-		    == addr.ip4.s_addr)
-		    return TRUE;
-		break;
-#ifdef HAVE_IN6_ADDR
-	    case AF_INET6:
-		if (memcmp(ifp->addr.ip6.s6_addr, addr.ip6.s6_addr,
-		    sizeof(addr.ip6.s6_addr)) == 0)
-		    return TRUE;
-		for (j = 0; j < sizeof(addr.ip6.s6_addr); j++) {
-		    if ((ifp->addr.ip6.s6_addr[j] & ifp->netmask.ip6.s6_addr[j]) != addr.ip6.s6_addr[j])
-			break;
-		}
-		if (j == sizeof(addr.ip6.s6_addr))
-		    return TRUE;
-#endif
-	}
-    }
-
-    return FALSE;
-}
-
-static int
-addr_matches_if_netmask(char *n, char *m)
-{
-    int i;
-    union sudo_in_addr_un addr, mask;
-    struct interface *ifp;
-#ifdef HAVE_IN6_ADDR
-    int j;
-#endif
-    int family;
-
-#ifdef HAVE_IN6_ADDR
-    if (inet_pton(AF_INET6, n, &addr.ip6) > 0)
-	family = AF_INET6;
-    else
-#endif
-    {
-	family = AF_INET;
-	addr.ip4.s_addr = inet_addr(n);
-    }
-
-    if (family == AF_INET) {
-	if (strchr(m, '.'))
-	    mask.ip4.s_addr = inet_addr(m);
-	else {
-	    i = 32 - atoi(m);
-	    mask.ip4.s_addr = 0xffffffff;
-	    mask.ip4.s_addr >>= i;
-	    mask.ip4.s_addr <<= i;
-	    mask.ip4.s_addr = htonl(mask.ip4.s_addr);
-	}
-    }
-#ifdef HAVE_IN6_ADDR
-    else {
-	if (inet_pton(AF_INET6, m, &mask.ip6) <= 0) {
-	    j = atoi(m);
-	    for (i = 0; i < 16; i++) {
-		if (j < i * 8)
-		    mask.ip6.s6_addr[i] = 0;
-		else if (i * 8 + 8 <= j)
-		    mask.ip6.s6_addr[i] = 0xff;
-		else
-		    mask.ip6.s6_addr[i] = 0xff00 >> (j - i * 8);
-	    }
-	}
-    }
-#endif /* HAVE_IN6_ADDR */
-
-    for (ifp = interfaces; ifp != NULL; ifp = ifp->next) {
-	if (ifp->family != family)
-	    continue;
-	switch(family) {
-	    case AF_INET:
-		if ((ifp->addr.ip4.s_addr & mask.ip4.s_addr) == addr.ip4.s_addr)
-		    return TRUE;
-#ifdef HAVE_IN6_ADDR
-	    case AF_INET6:
-		for (j = 0; j < sizeof(addr.ip6.s6_addr); j++) {
-		    if ((ifp->addr.ip6.s6_addr[j] & mask.ip6.s6_addr[j]) != addr.ip6.s6_addr[j])
-			break;
-		}
-		if (j == sizeof(addr.ip6.s6_addr))
-		    return TRUE;
-#endif /* HAVE_IN6_ADDR */
-	}
-    }
-
-    return FALSE;
+    debug_return_bool(dent != NULL);
 }
 
 /*
- * Returns TRUE if "n" is one of our ip addresses or if
- * "n" is a network that we are on, else returns FALSE.
+ * Returns true if the hostname matches the pattern, else false
  */
-int
-addr_matches(char *n)
-{
-    char *m;
-    int retval;
-
-    /* If there's an explicit netmask, use it. */
-    if ((m = strchr(n, '/'))) {
-	*m++ = '\0';
-	retval = addr_matches_if_netmask(n, m);
-	*(m - 1) = '/';
-    } else
-	retval = addr_matches_if(n);
-
-    return retval;
-}
-
-/*
- * Returns TRUE if the hostname matches the pattern, else FALSE
- */
-int
+bool
 hostname_matches(char *shost, char *lhost, char *pattern)
 {
+    debug_decl(hostname_matches, SUDO_DEBUG_MATCH)
+
     if (has_meta(pattern)) {
 	if (strchr(pattern, '.'))
-	    return !fnmatch(pattern, lhost, FNM_CASEFOLD);
+	    debug_return_bool(!fnmatch(pattern, lhost, FNM_CASEFOLD));
 	else
-	    return !fnmatch(pattern, shost, FNM_CASEFOLD);
+	    debug_return_bool(!fnmatch(pattern, shost, FNM_CASEFOLD));
     } else {
 	if (strchr(pattern, '.'))
-	    return !strcasecmp(lhost, pattern);
+	    debug_return_bool(!strcasecmp(lhost, pattern));
 	else
-	    return !strcasecmp(shost, pattern);
+	    debug_return_bool(!strcasecmp(shost, pattern));
     }
 }
 
 /*
- *  Returns TRUE if the user/uid from sudoers matches the specified user/uid,
- *  else returns FALSE.
+ *  Returns true if the user/uid from sudoers matches the specified user/uid,
+ *  else returns false.
  */
-int
+bool
 userpw_matches(char *sudoers_user, char *user, struct passwd *pw)
 {
+    debug_decl(userpw_matches, SUDO_DEBUG_MATCH)
+
     if (pw != NULL && *sudoers_user == '#') {
 	uid_t uid = (uid_t) atoi(sudoers_user + 1);
 	if (uid == pw->pw_uid)
-	    return TRUE;
+	    debug_return_bool(true);
     }
-    return strcmp(sudoers_user, user) == 0;
+    debug_return_bool(strcmp(sudoers_user, user) == 0);
 }
 
 /*
- *  Returns TRUE if the group/gid from sudoers matches the specified group/gid,
- *  else returns FALSE.
+ *  Returns true if the group/gid from sudoers matches the specified group/gid,
+ *  else returns false.
  */
-int
+bool
 group_matches(char *sudoers_group, struct group *gr)
 {
+    debug_decl(group_matches, SUDO_DEBUG_MATCH)
+
     if (*sudoers_group == '#') {
 	gid_t gid = (gid_t) atoi(sudoers_group + 1);
 	if (gid == gr->gr_gid)
-	    return TRUE;
+	    debug_return_bool(true);
     }
-    return strcmp(gr->gr_name, sudoers_group) == 0;
+    debug_return_bool(strcmp(gr->gr_name, sudoers_group) == 0);
 }
 
 /*
- *  Returns TRUE if the given user belongs to the named group,
- *  else returns FALSE.
+ *  Returns true if the given user belongs to the named group,
+ *  else returns false.
  */
-int
+bool
 usergr_matches(char *group, char *user, struct passwd *pw)
 {
-    int matched = FALSE;
+    int matched = false;
     struct passwd *pw0 = NULL;
+    debug_decl(usergr_matches, SUDO_DEBUG_MATCH)
 
     /* make sure we have a valid usergroup, sudo style */
     if (*group++ != '%')
@@ -812,41 +705,42 @@ usergr_matches(char *group, char *user, struct passwd *pw)
     }
 
     if (user_in_group(pw, group)) {
-	matched = TRUE;
+	matched = true;
 	goto done;
     }
 
     /* not a Unix group, could be an external group */
     if (def_group_plugin && group_plugin_query(user, group, pw)) {
-	matched = TRUE;
+	matched = true;
 	goto done;
     }
 
 done:
     if (pw0 != NULL)
-	pw_delref(pw0);
+	sudo_pw_delref(pw0);
 
-    return matched;
+    debug_return_bool(matched);
 }
 
 /*
- * Returns TRUE if "host" and "user" belong to the netgroup "netgr",
- * else return FALSE.  Either of "host", "shost" or "user" may be NULL
+ * Returns true if "host" and "user" belong to the netgroup "netgr",
+ * else return false.  Either of "host", "shost" or "user" may be NULL
  * in which case that argument is not checked...
  *
  * XXX - swap order of host & shost
  */
-int
+bool
 netgr_matches(char *netgr, char *lhost, char *shost, char *user)
 {
     static char *domain;
 #ifdef HAVE_GETDOMAINNAME
     static int initialized;
 #endif
+    debug_decl(netgr_matches, SUDO_DEBUG_MATCH)
 
     /* make sure we have a valid netgroup, sudo style */
     if (*netgr++ != '+')
-	return FALSE;
+	debug_return_bool(false);
 
 #ifdef HAVE_GETDOMAINNAME
     /* get the domain name (if any) */
@@ -862,10 +756,10 @@ netgr_matches(char *netgr, char *lhost, char *shost, char *user)
 
 #ifdef HAVE_INNETGR
     if (innetgr(netgr, lhost, user, domain))
-	return TRUE;
+	debug_return_bool(true);
     else if (lhost != shost && innetgr(netgr, shost, user, domain))
-	return TRUE;
+	debug_return_bool(true);
 #endif /* HAVE_INNETGR */
 
-    return FALSE;
+    debug_return_bool(false);
 }

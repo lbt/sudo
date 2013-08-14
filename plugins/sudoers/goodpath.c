@@ -41,25 +41,22 @@
 /*
  * Verify that path is a normal file and executable by root.
  */
-char *
+bool
 sudo_goodpath(const char *path, struct stat *sbp)
 {
     struct stat sb;
+    bool rval = false;
+    debug_decl(sudo_goodpath, SUDO_DEBUG_UTIL)
 
-    /* Check for brain damage */
-    if (path == NULL || path[0] == '\0')
-	return NULL;
-
-    if (stat(path, &sb))
-	return NULL;
-
-    /* Make sure path describes an executable regular file. */
-    if (!S_ISREG(sb.st_mode) || !(sb.st_mode & 0000111)) {
-	errno = EACCES;
-	return NULL;
+    if (path != NULL && stat(path, &sb) == 0) {
+	/* Make sure path describes an executable regular file. */
+	if (S_ISREG(sb.st_mode) && ISSET(sb.st_mode, 0111))
+	    rval = true;
+	else
+	    errno = EACCES;
+	if (sbp)
+	    (void) memcpy(sbp, &sb, sizeof(struct stat));
     }
 
-    if (sbp != NULL)
-	(void) memcpy(sbp, &sb, sizeof(struct stat));
-    return (char *)path;
+    debug_return_bool(rval);
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2011 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2009-2012 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -73,35 +73,17 @@ struct sigforward {
 };
 TQ_DECLARE(sigforward)
 static struct sigforward_list sigfwd_list;
+static pid_t ppgrp = -1;
 
-static int handle_signals(int fd, pid_t child, int log_io,
+volatile pid_t cmnd_pid = -1;
+
+static int handle_signals(int sv[2], pid_t child, int log_io,
     struct command_status *cstat);
 static void forward_signals(int fd);
 static void schedule_signal(int signo);
-
-/*
- * Like execve(2) but falls back to running through /bin/sh
- * ala execvp(3) if we get ENOEXEC.
- */
-int
-my_execve(const char *path, char *const argv[], char *const envp[])
-{
-    execve(path, argv, envp);
-    if (errno == ENOEXEC) {
-	int argc;
-	char **nargv;
-
-	for (argc = 0; argv[argc] != NULL; argc++)
-	    continue;
-	nargv = emalloc2(argc + 2, sizeof(char *));
-	nargv[0] = "sh";
-	nargv[1] = (char *)path;
-	memcpy(nargv + 2, argv + 1, argc * sizeof(char *));
-	execve(_PATH_BSHELL, nargv, envp);
-	efree(nargv);
-    }
-    return -1;
-}
+#ifdef SA_SIGINFO
+static void handler_user_only(int s, siginfo_t *info, void *context);
+#endif
 
 /*
  * Fork and execute a command, returns the child's pid.
@@ -111,16 +93,47 @@ static int fork_cmnd(struct command_details *details, int sv[2])
 {
     struct command_status cstat;
     sigaction_t sa;
-    pid_t child;
+    debug_decl(fork_cmnd, SUDO_DEBUG_EXEC)
 
+    ppgrp = getpgrp();	/* parent's process group */
+
+    /*
+     * Handle suspend/restore of sudo and the command.
+     * In most cases, the command will be in the same process group as
+     * sudo and job control will "just work".  However, if the command
+     * changes its process group ID and does not change it back (or is
+     * kill by SIGSTOP which is not catchable), we need to resume the
+     * command manually.  Also, if SIGTSTP is sent directly to sudo,
+     * we need to suspend the command, and then suspend ourself, restoring
+     * the default SIGTSTP handler temporarily.
+     *
+     * XXX - currently we send SIGCONT upon resume in some cases where
+     * we don't need to (e.g. command pgrp == parent pgrp).
+     */
     zero_bytes(&sa, sizeof(sa));
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_INTERRUPT; /* do not restart syscalls */
+#ifdef SA_SIGINFO
+    sa.sa_flags |= SA_SIGINFO;
+    sa.sa_sigaction = handler;
+#else
     sa.sa_handler = handler;
+#endif
     sigaction(SIGCONT, &sa, NULL);
+#ifdef SA_SIGINFO
+    sa.sa_sigaction = handler_user_only;
+#endif
+    sigaction(SIGTSTP, &sa, NULL);
 
-    child = fork();
-    switch (child) {
+    /*
+     * The policy plugin's session init must be run before we fork
+     * or certain pam modules won't be able to track their state.
+     */
+    if (policy_init_session(details) != true)
+	errorx(1, _("policy plugin failed session initialization"));
+
+    cmnd_pid = sudo_debug_fork();
+    switch (cmnd_pid) {
     case -1:
 	error(1, _("unable to fork"));
 	break;
@@ -131,23 +144,41 @@ static int fork_cmnd(struct command_details *details, int sv[2])
 	close(signal_pipe[1]);
 	fcntl(sv[1], F_SETFD, FD_CLOEXEC);
 	restore_signals();
-	if (exec_setup(details, NULL, -1) == TRUE) {
+	if (exec_setup(details, NULL, -1) == true) {
 	    /* headed for execve() */
-	    if (details->closefrom >= 0)
-		closefrom(details->closefrom);
+	    sudo_debug_execve(SUDO_DEBUG_INFO, details->command,
+		details->argv, details->envp);
+	    if (details->closefrom >= 0) {
+		int maxfd = details->closefrom;
+		dup2(sv[1], maxfd);
+		(void)fcntl(maxfd, F_SETFD, FD_CLOEXEC);
+		sv[1] = maxfd++;
+		if (sudo_debug_fd_set(maxfd) != -1)
+		    maxfd++;
+		closefrom(maxfd);
+	    }
 #ifdef HAVE_SELINUX
-	    if (ISSET(details->flags, CD_RBAC_ENABLED))
-		selinux_execve(details->command, details->argv, details->envp);
-	    else
+	    if (ISSET(details->flags, CD_RBAC_ENABLED)) {
+		selinux_execve(details->command, details->argv, details->envp,
+		    ISSET(details->flags, CD_NOEXEC));
+	    } else
 #endif
-		my_execve(details->command, details->argv, details->envp);
+	    {
+		sudo_execve(details->command, details->argv, details->envp,
+		    ISSET(details->flags, CD_NOEXEC));
+	    }
+	    sudo_debug_printf(SUDO_DEBUG_ERROR, "unable to exec %s: %s",
+		details->command, strerror(errno));
 	}
 	cstat.type = CMD_ERRNO;
 	cstat.val = errno;
 	send(sv[1], &cstat, sizeof(cstat), 0);
+	sudo_debug_exit_int(__func__, __FILE__, __LINE__, sudo_debug_subsys, 1);
 	_exit(1);
     }
-    return child;
+    sudo_debug_printf(SUDO_DEBUG_INFO, "executed %s, pid %d", details->command,
+	(int)cmnd_pid);
+    debug_return_int(cmnd_pid);
 }
 
 static struct signal_state {
@@ -177,9 +208,12 @@ void
 save_signals(void)
 {
     struct signal_state *ss;
+    debug_decl(save_signals, SUDO_DEBUG_EXEC)
 
     for (ss = saved_signals; ss->signo != -1; ss++)
 	sigaction(ss->signo, NULL, &ss->sa);
+
+    debug_return;
 }
 
 /*
@@ -189,9 +223,12 @@ void
 restore_signals(void)
 {
     struct signal_state *ss;
+    debug_decl(restore_signals, SUDO_DEBUG_EXEC)
 
     for (ss = saved_signals; ss->signo != -1; ss++)
 	sigaction(ss->signo, &ss->sa, NULL);
+
+    debug_return;
 }
 
 /*
@@ -200,27 +237,32 @@ restore_signals(void)
  * we fact that we have two different controlling terminals to deal with.
  */
 int
-sudo_execve(struct command_details *details, struct command_status *cstat)
+sudo_execute(struct command_details *details, struct command_status *cstat)
 {
-    int maxfd, n, nready, sv[2], log_io = FALSE;
+    int maxfd, n, nready, sv[2];
     const char *utmp_user = NULL;
+    bool log_io = false;
     fd_set *fdsr, *fdsw;
     sigaction_t sa;
+    sigset_t omask;
     pid_t child;
+    debug_decl(sudo_execute, SUDO_DEBUG_EXEC)
 
     /* If running in background mode, fork and exit. */
     if (ISSET(details->flags, CD_BACKGROUND)) {
-	switch (fork()) {
+	switch (sudo_debug_fork()) {
 	    case -1:
 		cstat->type = CMD_ERRNO;
 		cstat->val = errno;
-		return -1;
+		debug_return_int(-1);
 	    case 0:
 		/* child continues without controlling terminal */
 		(void)setpgid(0, 0);
 		break;
 	    default:
 		/* parent exits (but does not flush buffers) */
+		sudo_debug_exit_int(__func__, __FILE__, __LINE__,
+		    sudo_debug_subsys, 0);
 		_exit(0);
 	}
     }
@@ -231,10 +273,10 @@ sudo_execve(struct command_details *details, struct command_status *cstat)
      * as the io plugin tailqueue will be empty and no I/O logging will occur.
      */
     if (!tq_empty(&io_plugins) || ISSET(details->flags, CD_USE_PTY)) {
-	log_io = TRUE;
+	log_io = true;
 	if (ISSET(details->flags, CD_SET_UTMP))
 	    utmp_user = details->utmp_user ? details->utmp_user : user_details.username;
-	sudo_debug(8, "allocate pty for I/O logging");
+	sudo_debug_printf(SUDO_DEBUG_INFO, "allocate pty for I/O logging");
 	pty_setup(details->euid, user_details.tty, utmp_user);
     }
 
@@ -256,20 +298,39 @@ sudo_execve(struct command_details *details, struct command_status *cstat)
     sigemptyset(&sa.sa_mask);
 
     /*
-     * Signals for forward to the child process (excluding SIGALRM and SIGCHLD).
+     * Signals to forward to the child process (excluding SIGALRM and SIGCHLD).
      * Note: HP-UX select() will not be interrupted if SA_RESTART set.
      */
     sa.sa_flags = SA_INTERRUPT; /* do not restart syscalls */
+#ifdef SA_SIGINFO
+    sa.sa_flags |= SA_SIGINFO;
+    sa.sa_sigaction = handler;
+#else
     sa.sa_handler = handler;
+#endif
     sigaction(SIGALRM, &sa, NULL);
     sigaction(SIGCHLD, &sa, NULL);
-    sigaction(SIGHUP, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
     sigaction(SIGPIPE, &sa, NULL);
-    sigaction(SIGQUIT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGUSR1, &sa, NULL);
     sigaction(SIGUSR2, &sa, NULL);
+
+    /*
+     * When not running the command in a pty, we do not want to
+     * forward signals generated by the kernel that the child will
+     * already have received either by virtue of being in the
+     * controlling tty's process group (SIGINT, SIGQUIT) or because
+     * the session is terminating (SIGHUP).
+     */
+#ifdef SA_SIGINFO
+    if (!log_io) {
+	sa.sa_flags |= SA_SIGINFO;
+	sa.sa_sigaction = handler_user_only;
+    }
+#endif
+    sigaction(SIGHUP, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGQUIT, &sa, NULL);
 
     /* Max fd we will be selecting on. */
     maxfd = MAX(sv[0], signal_pipe[0]);
@@ -279,7 +340,7 @@ sudo_execve(struct command_details *details, struct command_status *cstat)
      * to and from pty.  Adjusts maxfd as needed.
      */
     if (log_io)
-	child = fork_pty(details, sv, &maxfd);
+	child = fork_pty(details, sv, &maxfd, &omask);
     else
 	child = fork_cmnd(details, sv);
     close(sv[1]);
@@ -300,11 +361,11 @@ sudo_execve(struct command_details *details, struct command_status *cstat)
      * In the event loop we pass input from user tty to master
      * and pass output from master to stdout and IO plugin.
      */
-    fdsr = (fd_set *)emalloc2(howmany(maxfd + 1, NFDBITS), sizeof(fd_mask));
-    fdsw = (fd_set *)emalloc2(howmany(maxfd + 1, NFDBITS), sizeof(fd_mask));
+    fdsr = emalloc2(howmany(maxfd + 1, NFDBITS), sizeof(fd_mask));
+    fdsw = emalloc2(howmany(maxfd + 1, NFDBITS), sizeof(fd_mask));
     for (;;) {
-	zero_bytes(fdsw, howmany(maxfd + 1, NFDBITS) * sizeof(fd_mask));
-	zero_bytes(fdsr, howmany(maxfd + 1, NFDBITS) * sizeof(fd_mask));
+	memset(fdsw, 0, howmany(maxfd + 1, NFDBITS) * sizeof(fd_mask));
+	memset(fdsr, 0, howmany(maxfd + 1, NFDBITS) * sizeof(fd_mask));
 
 	FD_SET(signal_pipe[0], fdsr);
 	FD_SET(sv[0], fdsr);
@@ -313,19 +374,29 @@ sudo_execve(struct command_details *details, struct command_status *cstat)
 	if (log_io)
 	    fd_set_iobs(fdsr, fdsw); /* XXX - better name */
 	nready = select(maxfd + 1, fdsr, fdsw, NULL, NULL);
+	sudo_debug_printf(SUDO_DEBUG_DEBUG, "select returns %d", nready);
 	if (nready == -1) {
-	    if (errno == EINTR)
+	    if (errno == EINTR || errno == ENOMEM)
 		continue;
-	    error(1, _("select failed"));
+	    if (errno == EBADF || errno == EIO) {
+		/* One of the ttys must have gone away. */
+		goto do_tty_io;
+	    }
+	    warning(_("select failed"));
+	    sudo_debug_printf(SUDO_DEBUG_ERROR,
+		"select failure, terminating child");
+	    schedule_signal(SIGKILL);
+	    forward_signals(sv[0]);
+	    break;
 	}
 	if (FD_ISSET(sv[0], fdsw)) {
 	    forward_signals(sv[0]);
 	}
 	if (FD_ISSET(signal_pipe[0], fdsr)) {
-	    n = handle_signals(signal_pipe[0], child, log_io, cstat);
+	    n = handle_signals(sv, child, log_io, cstat);
 	    if (n == 0) {
 		/* Child has exited, cstat is set, we are done. */
-		goto done;
+		break;
 	    }
 	    if (n == -1) {
 		/* Error reading signal_pipe[0], should not happen. */
@@ -337,38 +408,67 @@ sudo_execve(struct command_details *details, struct command_status *cstat)
 	if (FD_ISSET(sv[0], fdsr)) {
 	    /* read child status */
 	    n = recv(sv[0], cstat, sizeof(*cstat), 0);
-	    if (n == -1) {
-		if (errno == EINTR)
-		    continue;
-		/*
-		 * If not logging I/O we will receive ECONNRESET when
-		 * the command is executed.  It is safe to ignore this.
-		 */
-		if (log_io && errno != EAGAIN) {
-		    cstat->type = CMD_ERRNO;
-		    cstat->val = errno;
+	    if (n != sizeof(*cstat)) {
+		if (n == -1) {
+		    if (errno == EINTR)
+			continue;
+		    /*
+		     * If not logging I/O we may receive ECONNRESET when
+		     * the command is executed and sv is closed.
+		     * It is safe to ignore this.
+		     */
+		    if (log_io && errno != EAGAIN) {
+			cstat->type = CMD_ERRNO;
+			cstat->val = errno;
+			break;
+		    }
+		    sudo_debug_printf(SUDO_DEBUG_ERROR,
+			"failed to read child status: %s", strerror(errno));
+		} else {
+		    /* Short read or EOF. */
+		    sudo_debug_printf(SUDO_DEBUG_ERROR,
+			"failed to read child status: %s",
+			n ? "short read" : "EOF");
+		    /* XXX - should set cstat */
 		    break;
 		}
 	    }
-	    if (cstat->type == CMD_WSTATUS) {
+	    if (cstat->type == CMD_PID) {
+		/*
+                 * Once we know the command's pid we can unblock
+                 * signals which ere blocked in fork_pty().  This
+                 * avoids a race between exec of the command and
+                 * receipt of a fatal signal from it.
+		 */
+		cmnd_pid = cstat->val;
+		sudo_debug_printf(SUDO_DEBUG_INFO, "executed %s, pid %d",
+		    details->command, (int)cmnd_pid);
+		if (log_io)
+		    sigprocmask(SIG_SETMASK, &omask, NULL);
+	    } else if (cstat->type == CMD_WSTATUS) {
 		if (WIFSTOPPED(cstat->val)) {
 		    /* Suspend parent and tell child how to resume on return. */
-		    sudo_debug(8, "child stopped, suspending parent");
+		    sudo_debug_printf(SUDO_DEBUG_INFO,
+			"child stopped, suspending parent");
 		    n = suspend_parent(WSTOPSIG(cstat->val));
 		    schedule_signal(n);
 		    continue;
 		} else {
 		    /* Child exited or was killed, either way we are done. */
+		    sudo_debug_printf(SUDO_DEBUG_INFO, "child exited or was killed");
 		    break;
 		}
 	    } else if (cstat->type == CMD_ERRNO) {
 		/* Child was unable to execute command or broken pipe. */
+		sudo_debug_printf(SUDO_DEBUG_INFO, "errno from child: %s",
+		    strerror(cstat->val));
 		break;
 	    }
 	}
-
+do_tty_io:
 	if (perform_io(fdsr, fdsw, cstat) != 0) {
 	    /* I/O error, kill child if still alive and finish. */
+	    sudo_debug_printf(SUDO_DEBUG_ERROR, "I/O error, terminating child");
 	    schedule_signal(SIGKILL);
 	    forward_signals(sv[0]);
 	    break;
@@ -388,7 +488,6 @@ sudo_execve(struct command_details *details, struct command_status *cstat)
     }
 #endif
 
-done:
     efree(fdsr);
     efree(fdsw);
     while (!tq_empty(&sigfwd_list)) {
@@ -397,7 +496,7 @@ done:
 	efree(sigfwd);
     }
 
-    return cstat->type == CMD_ERRNO ? -1 : 0;
+    debug_return_int(cstat->type == CMD_ERRNO ? -1 : 0);
 }
 
 /*
@@ -405,12 +504,14 @@ done:
  * Returns -1 on error, 0 on child exit, else 1.
  */
 static int
-handle_signals(int fd, pid_t child, int log_io, struct command_status *cstat)
+handle_signals(int sv[2], pid_t child, int log_io, struct command_status *cstat)
 {
+    char signame[SIG2STR_MAX];
     unsigned char signo;
     ssize_t nread;
     int status;
     pid_t pid;
+    debug_decl(handle_signals, SUDO_DEBUG_EXEC)
 
     for (;;) {
 	/* read signal pipe */
@@ -425,12 +526,15 @@ handle_signals(int fd, pid_t child, int log_io, struct command_status *cstat)
 	    /* If pipe is empty, we are done. */
 	    if (errno == EAGAIN)
 		break;
-	    sudo_debug(9, "error reading signal pipe %s", strerror(errno));
+	    sudo_debug_printf(SUDO_DEBUG_ERROR, "error reading signal pipe %s",
+		strerror(errno));
 	    cstat->type = CMD_ERRNO;
 	    cstat->val = errno;
-	    return -1;
+	    debug_return_int(-1);
 	}
-	sudo_debug(9, "received signal %d", signo);
+	if (sig2str(signo, signame) == -1)
+	    snprintf(signame, sizeof(signame), "%d", signo);
+	sudo_debug_printf(SUDO_DEBUG_DIAG, "received SIG%s", signame);
 	if (signo == SIGCHLD) {
 	    /*
 	     * If logging I/O, child is the intermediate process,
@@ -440,20 +544,49 @@ handle_signals(int fd, pid_t child, int log_io, struct command_status *cstat)
 		pid = waitpid(child, &status, WUNTRACED|WNOHANG);
 	    } while (pid == -1 && errno == EINTR);
 	    if (pid == child) {
-		/* If not logging I/O and child has exited we are done. */
-		if (!log_io) {
+		if (log_io) {
+		    /*
+		     * On BSD we get ECONNRESET on sv[0] if monitor dies
+		     * and select() will return with sv[0] readable.
+		     * On Linux that doesn't appear to happen so if the
+		     * monitor dies, shut down the socketpair to force a
+		     * select() notification.
+		     */
+		    (void) shutdown(sv[0], SHUT_WR);
+		} else {
 		    if (WIFSTOPPED(status)) {
 			/*
 			 * Save the controlling terminal's process group
-			 * so we can restore it after we resume.
+			 * so we can restore it after we resume, if needed.
+			 * Most well-behaved shells change the pgrp back to
+			 * its original value before suspending so we must
+			 * not try to restore in that case, lest we race with
+			 * the child upon resume, potentially stopping sudo
+			 * with SIGTTOU while the command continues to run.
 			 */
+			sigaction_t sa, osa;
 			pid_t saved_pgrp = (pid_t)-1;
+			int signo = WSTOPSIG(status);
 			int fd = open(_PATH_TTY, O_RDWR|O_NOCTTY, 0);
-			if (fd != -1)
-			    saved_pgrp = tcgetpgrp(fd);
-			if (kill(getpid(), WSTOPSIG(status)) != 0)
-			    warning("kill(%d, %d)", getpid(), WSTOPSIG(status));
 			if (fd != -1) {
+			    if ((saved_pgrp = tcgetpgrp(fd)) == ppgrp)
+				saved_pgrp = -1;
+			}
+			if (signo == SIGTSTP) {
+			    zero_bytes(&sa, sizeof(sa));
+			    sigemptyset(&sa.sa_mask);
+			    sa.sa_handler = SIG_DFL;
+			    sigaction(SIGTSTP, &sa, &osa);
+			}
+			if (kill(getpid(), signo) != 0)
+			    warning("kill(%d, SIG%s)", (int)getpid(), signame);
+			if (signo == SIGTSTP)
+			    sigaction(SIGTSTP, &osa, NULL);
+			if (fd != -1) {
+			    /*
+			     * Restore command's process group if different.
+			     * Otherwise, we cannot resume some shells.
+			     */
 			    if (saved_pgrp != (pid_t)-1)
 				(void)tcsetpgrp(fd, saved_pgrp);
 			    close(fd);
@@ -462,10 +595,9 @@ handle_signals(int fd, pid_t child, int log_io, struct command_status *cstat)
 			/* Child has exited, we are done. */
 			cstat->type = CMD_WSTATUS;
 			cstat->val = status;
-			return 0;
+			debug_return_int(0);
 		    }
 		}
-		/* Else we get ECONNRESET on sv[0] if child dies. */
 	    }
 	} else {
 	    if (log_io) {
@@ -474,13 +606,13 @@ handle_signals(int fd, pid_t child, int log_io, struct command_status *cstat)
 	    } else {
 		/* Nothing listening on sv[0], send directly. */
 		if (signo == SIGALRM)
-		    terminate_child(child, FALSE);
+		    terminate_command(child, false);
 		else if (kill(child, signo) != 0)
-		    warning("kill(%d, %d)", child, signo);
+		    warning("kill(%d, SIG%s)", (int)child, signame);
 	    }
 	}
     }
-    return 1;
+    debug_return_int(1);
 }
 
 /*
@@ -489,14 +621,18 @@ handle_signals(int fd, pid_t child, int log_io, struct command_status *cstat)
 static void
 forward_signals(int sock)
 {
+    char signame[SIG2STR_MAX];
     struct sigforward *sigfwd;
     struct command_status cstat;
     ssize_t nsent;
+    debug_decl(forward_signals, SUDO_DEBUG_EXEC)
 
     while (!tq_empty(&sigfwd_list)) {
 	sigfwd = tq_first(&sigfwd_list);
-	sudo_debug(9, "sending signal %d to child over backchannel",
-	    sigfwd->signo);
+	if (sig2str(sigfwd->signo, signame) == -1)
+	    snprintf(signame, sizeof(signame), "%d", sigfwd->signo);
+	sudo_debug_printf(SUDO_DEBUG_INFO,
+	    "sending SIG%s to child over backchannel", signame);
 	cstat.type = CMD_SIGNO;
 	cstat.val = sigfwd->signo;
 	do {
@@ -506,16 +642,20 @@ forward_signals(int sock)
 	efree(sigfwd);
 	if (nsent != sizeof(cstat)) {
 	    if (errno == EPIPE) {
+		sudo_debug_printf(SUDO_DEBUG_ERROR,
+		    "broken pipe writing to child over backchannel");
 		/* Other end of socket gone, empty out sigfwd_list. */
 		while (!tq_empty(&sigfwd_list)) {
 		    sigfwd = tq_first(&sigfwd_list);
 		    tq_remove(&sigfwd_list, sigfwd);
 		    efree(sigfwd);
 		}
+		/* XXX - child (monitor) is dead, we should exit too? */
 	    }
 	    break;
 	}
     }
+    debug_return;
 }
 
 /*
@@ -525,18 +665,48 @@ static void
 schedule_signal(int signo)
 {
     struct sigforward *sigfwd;
+    char signame[SIG2STR_MAX];
+    debug_decl(schedule_signal, SUDO_DEBUG_EXEC)
 
-    sigfwd = emalloc(sizeof(*sigfwd));
+    if (sig2str(signo, signame) == -1)
+	snprintf(signame, sizeof(signame), "%d", signo);
+    sudo_debug_printf(SUDO_DEBUG_DIAG, "forwarding SIG%s to child", signame);
+
+    sigfwd = ecalloc(1, sizeof(*sigfwd));
     sigfwd->prev = sigfwd;
-    sigfwd->next = NULL;
+    /* sigfwd->next = NULL; */
     sigfwd->signo = signo;
     tq_append(&sigfwd_list, sigfwd);
+
+    debug_return;
 }
 
 /*
  * Generic handler for signals passed from parent -> child.
  * The other end of signal_pipe is checked in the main event loop.
  */
+#ifdef SA_SIGINFO
+void
+handler(int s, siginfo_t *info, void *context)
+{
+    unsigned char signo = (unsigned char)s;
+
+    /*
+     * If the signal came from the command we ran, just ignore
+     * it since we don't want the child to indirectly kill itself.
+     * This can happen with, e.g. BSD-derived versions of reboot
+     * that call kill(-1, SIGTERM) to kill all other processes.
+     */
+    if (info != NULL && info->si_code == SI_USER && info->si_pid == cmnd_pid)
+	    return;
+
+    /*
+     * The pipe is non-blocking, if we overflow the kernel's pipe
+     * buffer we drop the signal.  This is not a problem in practice.
+     */
+    ignore_result(write(signal_pipe[1], &signo, sizeof(signo)));
+}
+#else
 void
 handler(int s)
 {
@@ -546,9 +716,32 @@ handler(int s)
      * The pipe is non-blocking, if we overflow the kernel's pipe
      * buffer we drop the signal.  This is not a problem in practice.
      */
-    if (write(signal_pipe[1], &signo, sizeof(signo)) == -1)
-	/* shut up glibc */;
+    ignore_result(write(signal_pipe[1], &signo, sizeof(signo)));
 }
+#endif
+
+#ifdef SA_SIGINFO
+/*
+ * Generic handler for signals passed from parent -> child.
+ * The other end of signal_pipe is checked in the main event loop.
+ * This version is for the non-pty case and does not forward
+ * signals that are generated by the kernel.
+ */
+static void
+handler_user_only(int s, siginfo_t *info, void *context)
+{
+    unsigned char signo = (unsigned char)s;
+
+    /* Only forward user-generated signals. */
+    if (info != NULL && info->si_code == SI_USER) {
+	/*
+	 * The pipe is non-blocking, if we overflow the kernel's pipe
+	 * buffer we drop the signal.  This is not a problem in practice.
+	 */
+	ignore_result(write(signal_pipe[1], &signo, sizeof(signo)));
+    }
+}
+#endif /* SA_SIGINFO */
 
 /*
  * Open a pipe and make both ends non-blocking.
@@ -558,6 +751,7 @@ int
 pipe_nonblock(int fds[2])
 {
     int flags, rval;
+    debug_decl(pipe_nonblock, SUDO_DEBUG_EXEC)
 
     rval = pipe(fds);
     if (rval != -1) {
@@ -575,5 +769,5 @@ pipe_nonblock(int fds[2])
 	}
     }
 
-    return rval;
+    debug_return_int(rval);
 }

@@ -59,7 +59,6 @@
  * securid_init - Initialises communications with ACE server
  * Arguments in:
  *     pw - UNUSED
- *     promptp - UNUSED
  *     auth - sudo authentication structure
  *
  * Results out:
@@ -68,18 +67,19 @@
  *                   success.
  */
 int
-securid_init(struct passwd *pw, char **promptp, sudo_auth *auth)
+sudo_securid_init(struct passwd *pw, sudo_auth *auth)
 {
     static SDI_HANDLE sd_dat;			/* SecurID handle */
+    debug_decl(sudo_securid_init, SUDO_DEBUG_AUTH)
 
     auth->data = (void *) &sd_dat;		/* For method-specific data */
 
     /* Start communications */
     if (AceInitialize() != SD_FALSE)
-	return AUTH_SUCCESS;
+	debug_return_int(AUTH_SUCCESS);
 
     warningx(_("failed to initialise the ACE API library"));
-    return AUTH_FATAL;
+    debug_return_int(AUTH_FATAL);
 }
 
 /*
@@ -96,15 +96,16 @@ securid_init(struct passwd *pw, char **promptp, sudo_auth *auth)
  *                   otherwise
  */
 int
-securid_setup(struct passwd *pw, char **promptp, sudo_auth *auth)
+sudo_securid_setup(struct passwd *pw, char **promptp, sudo_auth *auth)
 {
     SDI_HANDLE *sd = (SDI_HANDLE *) auth->data;
     int retval;
+    debug_decl(sudo_securid_setup, SUDO_DEBUG_AUTH)
 
     /* Re-initialize SecurID every time. */
     if (SD_Init(sd) != ACM_OK) {
 	warningx(_("unable to contact the SecurID server"));
-	return AUTH_FATAL;
+	debug_return_int(AUTH_FATAL);
     }
 
     /* Lock new PIN code */
@@ -113,23 +114,23 @@ securid_setup(struct passwd *pw, char **promptp, sudo_auth *auth)
     switch (retval) {
 	case ACM_OK:
 		warningx(_("User ID locked for SecurID Authentication"));
-		return AUTH_SUCCESS;
+		debug_return_int(AUTH_SUCCESS);
 
         case ACE_UNDEFINED_USERNAME:
 		warningx(_("invalid username length for SecurID"));
-		return AUTH_FATAL;
+		debug_return_int(AUTH_FATAL);
 
 	case ACE_ERR_INVALID_HANDLE:
 		warningx(_("invalid Authentication Handle for SecurID"));
-		return AUTH_FATAL;
+		debug_return_int(AUTH_FATAL);
 
 	case ACM_ACCESS_DENIED:
 		warningx(_("SecurID communication failed"));
-		return AUTH_FATAL;
+		debug_return_int(AUTH_FATAL);
 
 	default:
 		warningx(_("unknown SecurID error"));
-		return AUTH_FATAL;
+		debug_return_int(AUTH_FATAL);
 	}
 }
 
@@ -146,10 +147,11 @@ securid_setup(struct passwd *pw, char **promptp, sudo_auth *auth)
  *                   incorrect authentication, fatal on errors
  */
 int
-securid_verify(struct passwd *pw, char *pass, sudo_auth *auth)
+sudo_securid_verify(struct passwd *pw, char *pass, sudo_auth *auth)
 {
     SDI_HANDLE *sd = (SDI_HANDLE *) auth->data;
     int rval;
+    debug_decl(sudo_securid_verify, SUDO_DEBUG_AUTH)
 
     pass = auth_getpass("Enter your PASSCODE: ",
 	def_passwd_timeout * 60, SUDO_CONV_PROMPT_ECHO_OFF);
@@ -219,5 +221,5 @@ then enter the new token code.\n", \
     SD_Close(*sd);
 
     /* Return stored state to calling process */
-    return rval;
+    debug_return_int(rval);
 }

@@ -177,10 +177,7 @@ verifypw
 	never all any always
 noexec
 	T_FLAG
-	"Preload the dummy exec functions contained in 'noexec_file'"
-noexec_file
-	T_STR|T_PATH
-	"File containing dummy exec functions: %s"
+	"Preload the dummy exec functions contained in the sudo_noexec library"
 ignore_local_sudoers
 	T_FLAG
 	"If LDAP directory is up, do we ignore local sudoers file"
@@ -219,7 +216,7 @@ sudoers_locale
 	"Locale to use while parsing sudoers: %s"
 visiblepw
 	T_FLAG
-	"Allow sudo to prompt for a password even if it would be visisble"
+	"Allow sudo to prompt for a password even if it would be visible"
 pwfeedback
 	T_FLAG
 	"Provide visual feedback at the password prompt when there is user input"
@@ -243,16 +240,22 @@ use_pty
 	"Always run commands in a pseudo-tty"
 group_plugin
 	T_STR
-	"Plugin for non-Unix group support"
+	"Plugin for non-Unix group support: %s"
 iolog_dir
 	T_STR|T_PATH
-	"Directory in which to store input/output logs"
+	"Directory in which to store input/output logs: %s"
 iolog_file
 	T_STR
-	"File in which to store the input/output log"
+	"File in which to store the input/output log: %s"
 set_utmp
 	T_FLAG
 	"Add an entry to the utmp/utmpx file when allocating a pty"
 utmp_runas
 	T_FLAG
 	"Set the user in utmp to the runas user, not the invoking user"
+privs
+	T_STR
+	"Set of permitted privileges"
+limitprivs
+	T_STR
+	"Set of limit privileges"

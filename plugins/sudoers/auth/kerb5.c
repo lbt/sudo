@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999-2005, 2007-2008, 2010-2011
+ * Copyright (c) 1999-2005, 2007-2008, 2010-2012
  *	Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -70,6 +70,12 @@ static struct _sudo_krb5_data {
 } sudo_krb5_data = { NULL, NULL, NULL };
 typedef struct _sudo_krb5_data *sudo_krb5_datap;
 
+#ifdef SUDO_KRB5_INSTANCE
+static const char *sudo_krb5_instance = SUDO_KRB5_INSTANCE;
+#else
+static const char *sudo_krb5_instance = NULL;
+#endif
+
 #ifndef HAVE_KRB5_GET_INIT_CREDS_OPT_ALLOC
 static krb5_error_code
 krb5_get_init_creds_opt_alloc(krb5_context context,
@@ -88,16 +94,56 @@ krb5_get_init_creds_opt_free(krb5_get_init_creds_opt *opts)
 #endif
 
 int
-kerb5_init(struct passwd *pw, char **promptp, sudo_auth *auth)
+sudo_krb5_setup(struct passwd *pw, char **promptp, sudo_auth *auth)
+{
+    static char	*krb5_prompt;
+    debug_decl(sudo_krb5_init, SUDO_DEBUG_AUTH)
+
+    if (krb5_prompt == NULL) {
+	krb5_context	sudo_context;
+	krb5_principal	princ;
+	char		*pname;
+	krb5_error_code	error;
+
+	sudo_context = ((sudo_krb5_datap) auth->data)->sudo_context;
+	princ = ((sudo_krb5_datap) auth->data)->princ;
+
+	/*
+	 * Really, we need to tell the caller not to prompt for password. The
+	 * API does not currently provide this unless the auth is standalone.
+	 */
+	if ((error = krb5_unparse_name(sudo_context, princ, &pname))) {
+	    log_error(NO_MAIL,
+		      _("%s: unable to unparse princ ('%s'): %s"), auth->name,
+		      pw->pw_name, error_message(error));
+	    debug_return_int(AUTH_FAILURE);
+	}
+
+	/* Only rewrite prompt if user didn't specify their own. */
+	/*if (!strcmp(prompt, PASSPROMPT)) { */
+	    easprintf(&krb5_prompt, "Password for %s: ", pname);
+	/*}*/
+	free(pname);
+    }
+    *promptp = krb5_prompt;
+
+    debug_return_int(AUTH_SUCCESS);
+}
+
+int
+sudo_krb5_init(struct passwd *pw, sudo_auth *auth)
 {
     krb5_context	sudo_context;
-    krb5_ccache		ccache;
-    krb5_principal	princ;
     krb5_error_code 	error;
-    char		cache_name[64];
-    char		*pname;
+    char		cache_name[64], *pname = pw->pw_name;
+    debug_decl(sudo_krb5_init, SUDO_DEBUG_AUTH)
 
     auth->data = (void *) &sudo_krb5_data; /* Stash all our data here */
+
+    if (sudo_krb5_instance != NULL) {
+	easprintf(&pname, "%s%s%s", pw->pw_name,
+	    sudo_krb5_instance[0] != '/' ? "/" : "", sudo_krb5_instance);
+    }
 
 #ifdef HAVE_KRB5_INIT_SECURE_CONTEXT
     error = krb5_init_secure_context(&(sudo_krb5_data.sudo_context));
@@ -105,70 +151,53 @@ kerb5_init(struct passwd *pw, char **promptp, sudo_auth *auth)
     error = krb5_init_context(&(sudo_krb5_data.sudo_context));
 #endif
     if (error)
-	return AUTH_FAILURE;
+	goto done;
     sudo_context = sudo_krb5_data.sudo_context;
 
-    if ((error = krb5_parse_name(sudo_context, pw->pw_name,
-	&(sudo_krb5_data.princ)))) {
-	log_error(NO_EXIT|NO_MAIL,
-		  _("%s: unable to parse '%s': %s"), auth->name, pw->pw_name,
+    error = krb5_parse_name(sudo_context, pname, &(sudo_krb5_data.princ));
+    if (error) {
+	log_error(NO_MAIL,
+		  _("%s: unable to parse '%s': %s"), auth->name, pname,
 		  error_message(error));
-	return AUTH_FAILURE;
+	goto done;
     }
-    princ = sudo_krb5_data.princ;
-
-    /*
-     * Really, we need to tell the caller not to prompt for password.
-     * The API does not currently provide this unless the auth is standalone.
-     */
-#if 1
-    if ((error = krb5_unparse_name(sudo_context, princ, &pname))) {
-	log_error(NO_EXIT|NO_MAIL,
-		  _("%s: unable to unparse princ ('%s'): %s"), auth->name,
-		  pw->pw_name, error_message(error));
-	return AUTH_FAILURE;
-    }
-
-    /* Only rewrite prompt if user didn't specify their own. */
-    /*if (!strcmp(prompt, PASSPROMPT)) { */
-	easprintf(promptp, "Password for %s: ", pname);
-    /*}*/
-    free(pname);
-#endif
 
     (void) snprintf(cache_name, sizeof(cache_name), "MEMORY:sudocc_%ld",
 		    (long) getpid());
     if ((error = krb5_cc_resolve(sudo_context, cache_name,
 	&(sudo_krb5_data.ccache)))) {
-	log_error(NO_EXIT|NO_MAIL,
+	log_error(NO_MAIL,
 		  _("%s: unable to resolve ccache: %s"), auth->name,
 		  error_message(error));
-	return AUTH_FAILURE;
+	goto done;
     }
-    ccache = sudo_krb5_data.ccache;
 
-    return AUTH_SUCCESS;
+done:
+    if (sudo_krb5_instance != NULL)
+	efree(pname);
+    debug_return_int(error ? AUTH_FAILURE : AUTH_SUCCESS);
 }
 
 #ifdef HAVE_KRB5_VERIFY_USER
 int
-kerb5_verify(struct passwd *pw, char *pass, sudo_auth *auth)
+sudo_krb5_verify(struct passwd *pw, char *pass, sudo_auth *auth)
 {
     krb5_context	sudo_context;
     krb5_principal	princ;
     krb5_ccache		ccache;
     krb5_error_code	error;
+    debug_decl(sudo_krb5_verify, SUDO_DEBUG_AUTH)
 
     sudo_context = ((sudo_krb5_datap) auth->data)->sudo_context;
     princ = ((sudo_krb5_datap) auth->data)->princ;
     ccache = ((sudo_krb5_datap) auth->data)->ccache;
 
     error = krb5_verify_user(sudo_context, princ, ccache, pass, 1, NULL);
-    return error ? AUTH_FAILURE : AUTH_SUCCESS;
+    debug_return_int(error ? AUTH_FAILURE : AUTH_SUCCESS);
 }
 #else
 int
-kerb5_verify(struct passwd *pw, char *pass, sudo_auth *auth)
+sudo_krb5_verify(struct passwd *pw, char *pass, sudo_auth *auth)
 {
     krb5_context	sudo_context;
     krb5_principal	princ;
@@ -176,6 +205,7 @@ kerb5_verify(struct passwd *pw, char *pass, sudo_auth *auth)
     krb5_ccache		ccache;
     krb5_error_code	error;
     krb5_get_init_creds_opt *opts = NULL;
+    debug_decl(sudo_krb5_verify, SUDO_DEBUG_AUTH)
 
     sudo_context = ((sudo_krb5_datap) auth->data)->sudo_context;
     princ = ((sudo_krb5_datap) auth->data)->princ;
@@ -184,7 +214,7 @@ kerb5_verify(struct passwd *pw, char *pass, sudo_auth *auth)
     /* Set default flags based on the local config file. */
     error = krb5_get_init_creds_opt_alloc(sudo_context, &opts);
     if (error) {
-	log_error(NO_EXIT|NO_MAIL,
+	log_error(NO_MAIL,
 		  _("%s: unable to allocate options: %s"), auth->name,
 		  error_message(error));
 	goto done;
@@ -200,7 +230,7 @@ kerb5_verify(struct passwd *pw, char *pass, sudo_auth *auth)
 					     NULL, 0, NULL, opts))) {
 	/* Don't print error if just a bad password */
 	if (error != KRB5KRB_AP_ERR_BAD_INTEGRITY)
-	    log_error(NO_EXIT|NO_MAIL,
+	    log_error(NO_MAIL,
 		      _("%s: unable to get credentials: %s"), auth->name,
 		      error_message(error));
 	goto done;
@@ -213,11 +243,11 @@ kerb5_verify(struct passwd *pw, char *pass, sudo_auth *auth)
 
     /* Store cred in cred cache. */
     if ((error = krb5_cc_initialize(sudo_context, ccache, princ))) {
-	log_error(NO_EXIT|NO_MAIL,
+	log_error(NO_MAIL,
 		  _("%s: unable to initialize ccache: %s"), auth->name,
 		  error_message(error));
     } else if ((error = krb5_cc_store_cred(sudo_context, ccache, creds))) {
-	log_error(NO_EXIT|NO_MAIL,
+	log_error(NO_MAIL,
 		  _("%s: unable to store cred in ccache: %s"), auth->name,
 		  error_message(error));
     }
@@ -232,16 +262,17 @@ done:
     }
     if (creds)
 	krb5_free_cred_contents(sudo_context, creds);
-    return error ? AUTH_FAILURE : AUTH_SUCCESS;
+    debug_return_int(error ? AUTH_FAILURE : AUTH_SUCCESS);
 }
 #endif
 
 int
-kerb5_cleanup(struct passwd *pw, sudo_auth *auth)
+sudo_krb5_cleanup(struct passwd *pw, sudo_auth *auth)
 {
     krb5_context	sudo_context;
     krb5_principal	princ;
     krb5_ccache		ccache;
+    debug_decl(sudo_krb5_cleanup, SUDO_DEBUG_AUTH)
 
     sudo_context = ((sudo_krb5_datap) auth->data)->sudo_context;
     princ = ((sudo_krb5_datap) auth->data)->princ;
@@ -255,7 +286,7 @@ kerb5_cleanup(struct passwd *pw, sudo_auth *auth)
 	krb5_free_context(sudo_context);
     }
 
-    return AUTH_SUCCESS;
+    debug_return_int(AUTH_SUCCESS);
 }
 
 #ifndef HAVE_KRB5_VERIFY_USER
@@ -273,6 +304,7 @@ verify_krb_v5_tgt(krb5_context sudo_context, krb5_creds *cred, char *auth_name)
     krb5_error_code	error;
     krb5_principal	server;
     krb5_verify_init_creds_opt vopt;
+    debug_decl(verify_krb_v5_tgt, SUDO_DEBUG_AUTH)
 
     /*
      * Get the server principal for the local host.
@@ -280,10 +312,10 @@ verify_krb_v5_tgt(krb5_context sudo_context, krb5_creds *cred, char *auth_name)
      */
     if ((error = krb5_sname_to_principal(sudo_context, NULL, NULL,
 					KRB5_NT_SRV_HST, &server))) {
-	log_error(NO_EXIT|NO_MAIL,
+	log_error(NO_MAIL,
 		  _("%s: unable to get host principal: %s"), auth_name,
 		  error_message(error));
-	return -1;
+	debug_return_int(-1);
     }
 
     /* Initialize verify opts and set secure mode */
@@ -295,9 +327,9 @@ verify_krb_v5_tgt(krb5_context sudo_context, krb5_creds *cred, char *auth_name)
 				   NULL, &vopt);
     krb5_free_principal(sudo_context, server);
     if (error)
-	log_error(NO_EXIT|NO_MAIL,
+	log_error(NO_MAIL,
 		  _("%s: Cannot verify TGT! Possible attack!: %s"),
 		  auth_name, error_message(error));
-    return error;
+    debug_return_int(error);
 }
 #endif

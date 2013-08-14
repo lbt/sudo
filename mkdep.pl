@@ -9,6 +9,7 @@ die "usage: $0 Makefile ...\n" unless $#ARGV >= 0;
 my @incpaths;
 my %dir_vars;
 my %implicit;
+my %generated;
 
 # Read in MANIFEST fail if present
 my %manifest;
@@ -48,12 +49,13 @@ sub mkdep {
     $makefile =~ s/\\\n//mg;
 
     # Expand some configure bits
+    $makefile =~ s:\@DEV\@::g;
     $makefile =~ s:\@COMMON_OBJS\@:aix.lo:;
     $makefile =~ s:\@SUDO_OBJS\@:preload.o selinux.o sesh.o sudo_noexec.lo:;
-    $makefile =~ s:\@SUDOERS_OBJS\@:bsm_audit.lo linux_audit.lo ldap.lo plugin_error.lo:;
+    $makefile =~ s:\@SUDOERS_OBJS\@:bsm_audit.lo linux_audit.lo ldap.lo plugin_error.lo sssd.lo:;
     # XXX - fill in AUTH_OBJS from contents of the auth dir instead
-    $makefile =~ s:\@AUTH_OBJS\@:afs.lo aix_auth.lo bsdauth.lo dce.lo fwtk.lo kerb4.lo kerb5.lo pam.lo passwd.lo rfc1938.lo secureware.lo securid.lo securid5.lo sia.lo:;
-    $makefile =~ s:\@LTLIBOBJS\@:closefrom.lo dlopen.lo fnmatch.lo getcwd.lo getgrouplist.lo getline.lo getprogname.lo glob.lo isblank.lo memrchr.lo mksiglist.lo mktemp.lo nanosleep.lo setenv.lo siglist.lo snprintf.lo strlcat.lo strlcpy.lo strsignal.lo unsetenv.lo utimes.lo globtest.o fnm_test.o:;
+    $makefile =~ s:\@AUTH_OBJS\@:afs.lo aix_auth.lo bsdauth.lo dce.lo fwtk.lo getspwuid.lo kerb5.lo pam.lo passwd.lo rfc1938.lo secureware.lo securid5.lo sia.lo:;
+    $makefile =~ s:\@LTLIBOBJS\@:closefrom.lo dlopen.lo fnmatch.lo getcwd.lo getgrouplist.lo getline.lo getprogname.lo glob.lo isblank.lo memrchr.lo mksiglist.lo mksigname.lo mktemp.lo nanosleep.lo pw_dup.lo sig2str.lo siglist.lo signame.lo snprintf.lo strlcat.lo strlcpy.lo strsignal.lo utimes.lo globtest.o fnm_test.o:;
 
     # Parse OBJS lines
     my %objs;
@@ -68,6 +70,13 @@ sub mkdep {
     @incpaths = ();
     while ($makefile =~ /-I(\S+)/mg) {
 	push(@incpaths, $1) unless $1 eq ".";
+    }
+
+    # Check for generated files
+    if ($makefile =~ /GENERATED\s*=\s*(.+)$/m) {
+	foreach (split(/\s+/, $1)) {
+	    $generated{$_} = 1;
+	}
     }
 
     # Values of srcdir, top_srcdir, top_builddir, incdir
@@ -108,6 +117,7 @@ sub mkdep {
 	    } elsif (exists $manifest{$src}) {
 		$src = $manifest{$src};
 		foreach (sort { length($b) <=> length($a) } keys %dir_vars) {
+		    next if $_ eq "devdir";
 		    last if $src =~ s:^\Q$dir_vars{$_}/\E:\$\($_\)/:;
 		}
 	    } else {
@@ -141,13 +151,13 @@ sub mkdep {
 	}
     }
 
-    rename($file, $file . ".old");
-    if (!open(MF, ">$file")) {
-	warn("cannot open $file: $!\n");
-	rename($file . ".old", $file);
+    my $newfile = $file . ".new";
+    if (!open(MF, ">$newfile")) {
+	warn("cannot open $newfile: $!\n");
     } else {
-	print MF $new_makefile || warn("cannot write $file: $!\n");
-	close(MF);
+	print MF $new_makefile || warn("cannot write $newfile: $!\n");
+	close(MF) || warn("cannot close $newfile: $!\n");;
+	rename($newfile, $file);
     }
 }
 
@@ -198,10 +208,15 @@ sub find_header {
     return ("\$(top_builddir\)/$hdr", "./${hdr}.in") if -r "./${hdr}.in";
     return ("./$hdr", "$dir_vars{'srcdir'}/${hdr}.in") if -r "$dir_vars{'srcdir'}/${hdr}.in";
 
+    if (exists $generated{$hdr}) {
+	my $hdr_path = $dir_vars{'devdir'} . '/' . $hdr;
+	return ('$(devdir)/' . $hdr, $hdr_path) if -r $hdr_path;
+    }
     foreach my $inc (@incpaths) {
 	my $hdr_path = "$inc/$hdr";
 	# resolve variables in include path
 	foreach (keys %dir_vars) {
+	    next if $_ eq "devdir";
 	    $hdr_path =~ s/\$[\(\{]$_[\)\}]/$dir_vars{$_}/g;
 	}
 	return ("$inc/$hdr", $hdr_path) if -r $hdr_path;

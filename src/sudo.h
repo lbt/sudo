@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1993-1996, 1998-2005, 2007-2011
+ * Copyright (c) 1993-1996, 1998-2005, 2007-2012
  *	Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -26,27 +26,30 @@
 
 #include <limits.h>
 #include <pathnames.h>
+#ifdef HAVE_STDBOOL_H
+# include <stdbool.h>
+#else
+# include "compat/stdbool.h"
+#endif /* HAVE_STDBOOL_H */
 
 #include "missing.h"
 #include "alloc.h"
 #include "error.h"
 #include "fileops.h"
 #include "list.h"
+#include "sudo_conf.h"
+#include "sudo_debug.h"
 #include "gettext.h"
+
+#ifdef HAVE_PRIV_SET
+# include <priv.h>
+#endif
 
 #ifdef __TANDEM
 # define ROOT_UID       65535
 #else
 # define ROOT_UID       0
 #endif
-
-/*
- * Pseudo-boolean values
- */
-#undef TRUE
-#define TRUE                     1
-#undef FALSE
-#define FALSE                    0
 
 /*
  * Various modes sudo can be in (based on arguments) in hex
@@ -93,6 +96,11 @@
 #define TGP_NOECHO_TRY	0x10		/* turn off echo if possible */
 
 struct user_details {
+    pid_t pid;
+    pid_t ppid;
+    pid_t pgid;
+    pid_t tcpgid;
+    pid_t sid;
     uid_t uid;
     uid_t euid;
     uid_t gid;
@@ -134,6 +142,7 @@ struct command_details {
     int ngroups;
     int closefrom;
     int flags;
+    struct passwd *pw;
     GETGROUPS_T *groups;
     const char *command;
     const char *cwd;
@@ -144,6 +153,10 @@ struct command_details {
     const char *utmp_user;
     char **argv;
     char **envp;
+#ifdef HAVE_PRIV_SET
+    priv_set_t *privs;
+    priv_set_t *limitprivs;
+#endif
 };
 
 /* Status passed between parent and child via socketpair */
@@ -152,6 +165,7 @@ struct command_status {
 #define CMD_ERRNO 1
 #define CMD_WSTATUS 2
 #define CMD_SIGNO 3
+#define CMD_PID 4
     int type;
     int val;
 };
@@ -164,14 +178,12 @@ void cleanup(int);
 /* tgetpass.c */
 char *tgetpass(const char *, int, int);
 int tty_present(void);
-extern const char *askpass_path;
-extern const char *noexec_path;
 
 /* zero_bytes.c */
 void zero_bytes(volatile void *, size_t);
 
 /* exec.c */
-int sudo_execve(struct command_details *details, struct command_status *cstat);
+int sudo_execute(struct command_details *details, struct command_status *cstat);
 void save_signals(void);
 void restore_signals(void);
 
@@ -186,7 +198,7 @@ int term_restore(int, int);
 char *fmt_string(const char *var, const char *value);
 
 /* atobool.c */
-int atobool(const char *str);
+bool atobool(const char *str);
 
 /* parse_args.c */
 int parse_args(int argc, char **argv, int *nargc, char ***nargv,
@@ -200,10 +212,9 @@ int get_pty(int *master, int *slave, char *name, size_t namesz, uid_t uid);
 void get_ttysize(int *rowp, int *colp);
 
 /* sudo.c */
-int exec_setup(struct command_details *details, const char *ptyname, int ptyfd);
+bool exec_setup(struct command_details *details, const char *ptyname, int ptyfd);
+int policy_init_session(struct command_details *details);
 int run_command(struct command_details *details);
-void sudo_debug(int level, const char *format, ...) __printflike(2, 3);
-extern int debug_level;
 extern const char *list_user, *runas_user, *runas_group;
 extern struct user_details user_details;
 
@@ -217,12 +228,26 @@ void usage(int);
 int selinux_restore_tty(void);
 int selinux_setup(const char *role, const char *type, const char *ttyn,
     int ttyfd);
-void selinux_execve(const char *path, char *argv[], char *envp[]);
+void selinux_execve(const char *path, char *const argv[], char *const envp[],
+    int noexec);
 
 /* aix.c */
 void aix_prep_user(char *user, const char *tty);
 void aix_restoreauthdb(void);
 void aix_setauthdb(char *user);
+
+/* hooks.c */
+/* XXX - move to sudo_plugin_int.h? */
+struct sudo_hook;
+int register_hook(struct sudo_hook *hook);
+int deregister_hook(struct sudo_hook *hook);
+int process_hooks_getenv(const char *name, char **val);
+int process_hooks_setenv(const char *name, const char *value, int overwrite);
+int process_hooks_putenv(char *string);
+int process_hooks_unsetenv(const char *name);
+
+/* env_hooks.c */
+char *getenv_unhooked(const char *name);
 
 /* interfaces.c */
 int get_net_ifs(char **addrinfo);
@@ -230,8 +255,7 @@ int get_net_ifs(char **addrinfo);
 /* setgroups.c */
 int sudo_setgroups(int ngids, const GETGROUPS_T *gids);
 
-#ifndef errno
-extern int errno;
-#endif
+/* ttyname.c */
+char *get_process_ttyname(void);
 
 #endif /* _SUDO_SUDO_H */

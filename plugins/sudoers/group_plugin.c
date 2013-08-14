@@ -16,8 +16,6 @@
 
 #include <config.h>
 
-#if defined(HAVE_DLOPEN) || defined(HAVE_SHL_LOAD)
-
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/stat.h>
@@ -58,6 +56,8 @@
 # define RTLD_GLOBAL	0
 #endif
 
+#if defined(HAVE_DLOPEN) || defined(HAVE_SHL_LOAD)
+
 static void *group_handle;
 static struct sudoers_group_plugin *group_plugin;
 
@@ -73,6 +73,7 @@ group_plugin_load(char *plugin_info)
     char *args, path[PATH_MAX];
     char **argv = NULL;
     int len, rc = -1;
+    debug_decl(group_plugin_load, SUDO_DEBUG_UTIL)
 
     /*
      * Fill in .so path and split out args (if any).
@@ -130,14 +131,15 @@ group_plugin_load(char *plugin_info)
      * Split args into a vector if specified.
      */
     if (args != NULL) {
-	int ac = 0, wasblank = TRUE;
+	int ac = 0;
+	bool wasblank = true;
 	char *cp;
 
         for (cp = args; *cp != '\0'; cp++) {
             if (isblank((unsigned char)*cp)) {
-                wasblank = TRUE;
+                wasblank = true;
             } else if (wasblank) {
-                wasblank = FALSE;
+                wasblank = false;
                 ac++;
             }
         }
@@ -154,7 +156,7 @@ group_plugin_load(char *plugin_info)
 done:
     efree(argv);
 
-    if (rc != TRUE) {
+    if (rc != true) {
 	if (group_handle != NULL) {
 	    dlclose(group_handle);
 	    group_handle = NULL;
@@ -162,12 +164,14 @@ done:
 	}
     }
 
-    return rc;
+    debug_return_bool(rc);
 }
 
 void
 group_plugin_unload(void)
 {
+    debug_decl(group_plugin_unload, SUDO_DEBUG_UTIL)
+
     if (group_plugin != NULL) {
 	(group_plugin->cleanup)();
 	group_plugin = NULL;
@@ -176,15 +180,18 @@ group_plugin_unload(void)
 	dlclose(group_handle);
 	group_handle = NULL;
     }
+    debug_return;
 }
 
 int
 group_plugin_query(const char *user, const char *group,
     const struct passwd *pwd)
 {
+    debug_decl(group_plugin_query, SUDO_DEBUG_UTIL)
+
     if (group_plugin == NULL)
-	return FALSE;
-    return (group_plugin->query)(user, group, pwd);
+	debug_return_bool(false);
+    debug_return_bool((group_plugin->query)(user, group, pwd));
 }
 
 #else /* !HAVE_DLOPEN && !HAVE_SHL_LOAD */
@@ -193,29 +200,26 @@ group_plugin_query(const char *user, const char *group,
  * No loadable shared object support.
  */
 
-#ifndef FALSE
-#define FALSE	0
-#endif
-
-struct passwd;
-
 int
 group_plugin_load(char *plugin_info)
 {
-    return FALSE;
+    debug_decl(group_plugin_load, SUDO_DEBUG_UTIL)
+    debug_return_bool(false);
 }
 
 void
 group_plugin_unload(void)
 {
-    return;
+    debug_decl(group_plugin_unload, SUDO_DEBUG_UTIL)
+    debug_return;
 }
 
 int
 group_plugin_query(const char *user, const char *group,
     const struct passwd *pwd)
 {
-    return FALSE;
+    debug_decl(group_plugin_query, SUDO_DEBUG_UTIL)
+    debug_return_bool(false);
 }
 
 #endif /* HAVE_DLOPEN || HAVE_SHL_LOAD */

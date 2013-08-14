@@ -28,6 +28,11 @@
 # include <sys/file.h>
 #endif /* HAVE_FLOCK */
 #include <stdio.h>
+#ifdef HAVE_STDBOOL_H
+# include <stdbool.h>
+#else
+# include "compat/stdbool.h"
+#endif
 #ifdef HAVE_STRING_H
 # include <string.h>
 #endif /* HAVE_STRING_H */
@@ -43,12 +48,13 @@
 #if TIME_WITH_SYS_TIME
 # include <time.h>
 #endif
-#ifndef HAVE_TIMESPEC
+#ifndef HAVE_STRUCT_TIMESPEC
 # include "compat/timespec.h"
 #endif
 
 #include "missing.h"
 #include "fileops.h"
+#include "sudo_debug.h"
 
 #ifndef LINE_MAX
 # define LINE_MAX 2048
@@ -61,6 +67,8 @@ int
 touch(int fd, char *path, struct timeval *tvp)
 {
     struct timeval times[2];
+    int rval = -1;
+    debug_decl(touch, SUDO_DEBUG_UTIL)
 
     if (tvp != NULL) {
 	times[0].tv_sec = times[1].tv_sec = tvp->tv_sec;
@@ -69,23 +77,23 @@ touch(int fd, char *path, struct timeval *tvp)
 
 #if defined(HAVE_FUTIME) || defined(HAVE_FUTIMES)
     if (fd != -1)
-	return futimes(fd, tvp ? times : NULL);
+	rval = futimes(fd, tvp ? times : NULL);
     else
 #endif
     if (path != NULL)
-	return utimes(path, tvp ? times : NULL);
-    else
-	return -1;
+	rval = utimes(path, tvp ? times : NULL);
+    debug_return_int(rval);
 }
 
 /*
  * Lock/unlock a file.
  */
 #ifdef HAVE_LOCKF
-int
+bool
 lock_file(int fd, int lockit)
 {
     int op = 0;
+    debug_decl(lock_file, SUDO_DEBUG_UTIL)
 
     switch (lockit) {
 	case SUDO_LOCK:
@@ -98,13 +106,14 @@ lock_file(int fd, int lockit)
 	    op = F_ULOCK;
 	    break;
     }
-    return lockf(fd, op, 0) == 0;
+    debug_return_bool(lockf(fd, op, 0) == 0);
 }
 #elif HAVE_FLOCK
-int
+bool
 lock_file(int fd, int lockit)
 {
     int op = 0;
+    debug_decl(lock_file, SUDO_DEBUG_UTIL)
 
     switch (lockit) {
 	case SUDO_LOCK:
@@ -117,15 +126,16 @@ lock_file(int fd, int lockit)
 	    op = LOCK_UN;
 	    break;
     }
-    return flock(fd, op) == 0;
+    debug_return_bool(flock(fd, op) == 0);
 }
 #else
-int
+bool
 lock_file(int fd, int lockit)
 {
 #ifdef F_SETLK
     int func;
     struct flock lock;
+    debug_decl(lock_file, SUDO_DEBUG_UTIL)
 
     lock.l_start = 0;
     lock.l_len = 0;
@@ -134,9 +144,9 @@ lock_file(int fd, int lockit)
     lock.l_whence = SEEK_SET;
     func = (lockit == SUDO_LOCK) ? F_SETLKW : F_SETLK;
 
-    return fcntl(fd, func, &lock) == 0;
+    debug_return_bool(fcntl(fd, func, &lock) == 0);
 #else
-    return TRUE;
+    return true;
 #endif
 }
 #endif
@@ -151,6 +161,7 @@ sudo_parseln(FILE *fp)
     size_t len;
     char *cp = NULL;
     static char buf[LINE_MAX];
+    debug_decl(sudo_parseln, SUDO_DEBUG_UTIL)
 
     if (fgets(buf, sizeof(buf), fp) != NULL) {
 	/* Remove comments */
@@ -164,5 +175,5 @@ sudo_parseln(FILE *fp)
 	for (cp = buf; isblank((unsigned char)*cp); cp++)
 	    continue;
     }
-    return cp;
+    debug_return_str(cp);
 }

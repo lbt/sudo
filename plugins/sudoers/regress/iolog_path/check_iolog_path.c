@@ -42,12 +42,15 @@
 #include <grp.h>
 #include <time.h>
 
+#define SUDO_ERROR_WRAP 0
+
 #define _SUDO_MAIN
 #include "sudoers.h"
 #include "def_data.c"
 
 struct sudo_user sudo_user;
 struct passwd *list_pw;
+sudo_conv_t sudo_conv;		/* NULL in non-plugin */
 
 static char sessid[7];
 
@@ -104,6 +107,10 @@ main(int argc, char *argv[])
     int state = 0;
     int errors = 0;
     int tests = 0;
+
+#if !defined(HAVE_GETPROGNAME) && !defined(HAVE___PROGNAME)
+    setprogname(argc > 0 ? argv[0] : "check_iolog_path");
+#endif
 
     if (argc != 2)
 	usage();
@@ -193,7 +200,7 @@ main(int argc, char *argv[])
     exit(errors);
 }
 
-void io_nextid(char *iolog_dir, char id[7])
+void io_nextid(char *iolog_dir, char *fallback, char id[7])
 {
     memcpy(id, sessid, sizeof(sessid));
 }

@@ -17,11 +17,12 @@
 #ifndef _SUDO_TOKE_H
 #define _SUDO_TOKE_H
 
-int append(const char *, int);
-int fill_args(const char *, int, int);
-int fill_cmnd(const char *, int);
-int fill_txt(const char *, int, int);
-int ipv6_valid(const char *s);
+bool append(const char *, int);
+bool fill_args(const char *, int, int);
+bool fill_cmnd(const char *, int);
+bool fill_txt(const char *, int, int);
+bool ipv6_valid(const char *s);
+int sudoers_trace_print(const char *msg);
 void yyerror(const char *);
 
 #ifndef FLEX_SCANNER
@@ -33,9 +34,9 @@ extern int (*trace_print)(const char *msg);
 /* realloc() to size + COMMANDARGINC to make room for command args */
 #define COMMANDARGINC   64
 
-#define LEXTRACE(msg)   do { \
-    if (trace_print != NULL) \
-        (*trace_print)(msg); \
+#define LEXTRACE(msg)   do {						\
+    if (trace_print != NULL)						\
+	(*trace_print)(msg);						\
 } while (0);
 
 #endif /* _SUDO_TOKE_H */
