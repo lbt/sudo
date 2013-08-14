@@ -1,36 +1,35 @@
 Name: sudo
 Summary: Execute some commands as root
 Version: 1.8.2
-Release: 1
+Release: 2
 Group: Applications/System
 License: BSD3c
 Sources:
-    - "%{name}-%{version}.tar.bz2"
-    - sudo.pamd
+  - '%{name}-%{version}.tar.bz2'
+  - sudo.pamd
 Description: |
-    Sudo is a command that allows users to execute some commands as root.
-    The /etc/sudoers file (edited with 'visudo') specifies which users have
-    access to sudo and which commands they can run. Sudo logs all its
-    activities to syslogd, so the system administrator can keep an eye on
-    things. Sudo asks for the password for initializing a check period of a
-    given time N (where N is defined at installation and is set to 5
-    minutes by default).
-
+  Sudo is a command that allows users to execute some commands as root.
+  The /etc/sudoers file (edited with 'visudo') specifies which users have
+  access to sudo and which commands they can run. Sudo logs all its
+  activities to syslogd, so the system administrator can keep an eye on
+  things. Sudo asks for the password for initializing a check period of a
+  given time N (where N is defined at installation and is set to 5
+  minutes by default).
 PkgBR:
-    - pam-devel
+  - pam-devel
 ConfigOptions:
-    - --libexecdir=%{_libexecdir}/sudo
-    - --docdir=%{_docdir}/%{name}
-    - --with-noexec=%{_libexecdir}/sudo/sudo_noexec.so
-    - --with-pam
-    - --with-logfac=auth
-    - --with-insults
-    - --with-all-insults
-    - --with-ignore-dot
-    - --with-tty-tickets
-    - --enable-shell-sets-home
-    - --enable-warnings
-    - --with-sudoers-mode=0440
-    - --with-env-editor
-    - --without-secure-path
-
+  - --libexecdir=%{_libexecdir}/sudo
+  - --docdir=%{_docdir}/%{name}
+  - --with-noexec=%{_libexecdir}/sudo/sudo_noexec.so
+  - --with-pam
+  - --with-logfac=auth
+  - --with-insults
+  - --with-all-insults
+  - --with-ignore-dot
+  - --with-tty-tickets
+  - --enable-shell-sets-home
+  - --enable-warnings
+  - --with-sudoers-mode=0440
+  - --with-env-editor
+  - --without-secure-path
+Patches: []
