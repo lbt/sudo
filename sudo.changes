@@ -1,0 +1,5 @@
+* Mon Oct 15 2012 David Greaves <david@dgreaves.com> - 1.8.6p3-1
+- New upstream release fixes MER#379
+- Add /sbin to --with-secure-path option of ./configure
+  Fixes MER#554
+- Migrated to gitpkg

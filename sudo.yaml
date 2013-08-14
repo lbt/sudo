@@ -1,11 +1,11 @@
 Name: sudo
 Summary: Execute some commands as root
-Version: 1.8.2
+Version: 1.8.6p3
 Release: 1
 Group: Applications/System
 License: BSD3c
 Sources:
-    - "%{name}-%{version}.tar.bz2"
+    - "%{name}-%{version}.tar.gz"
     - sudo.pamd
 Description: |
     Sudo is a command that allows users to execute some commands as root.
@@ -32,5 +32,4 @@ ConfigOptions:
     - --enable-warnings
     - --with-sudoers-mode=0440
     - --with-env-editor
-    - --without-secure-path
-
+    - --with-secure-path=/usr/local/bin:/bin:/usr/bin:/usr/local/sbin:/sbin:/usr/sbin:/root/bin

@@ -9,11 +9,11 @@ Name:       sudo
 # << macros
 
 Summary:    Execute some commands as root
-Version:    1.8.2
+Version:    1.8.6p3
 Release:    1
 Group:      Applications/System
 License:    BSD3c
-Source0:    %{name}-%{version}.tar.bz2
+Source0:    %{name}-%{version}.tar.gz
 Source1:    sudo.pamd
 Source100:  sudo.yaml
 BuildRequires:  pam-devel
@@ -53,7 +53,7 @@ minutes by default).
     --enable-warnings \
     --with-sudoers-mode=0440 \
     --with-env-editor \
-    --without-secure-path
+    --with-secure-path=/usr/local/bin:/bin:/usr/bin:/usr/local/sbin:/sbin:/usr/sbin:/root/bin
 
 make %{?jobs:-j%jobs}
 
