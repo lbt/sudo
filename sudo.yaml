@@ -1,9 +1,10 @@
 Name: sudo
 Summary: Execute some commands as root
-Version: 1.8.6p3
+Version: 1.8.10p3
 Release: 2
 Group: Applications/System
 License: BSD3c
+URL: http://www.sudo.ws/
 Sources:
   - '%{name}-%{version}.tar.gz'
   - sudo.pamd

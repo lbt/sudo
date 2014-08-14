@@ -9,10 +9,11 @@ Name:       sudo
 # << macros
 
 Summary:    Execute some commands as root
-Version:    1.8.6p3
+Version:    1.8.10p3
 Release:    2
 Group:      Applications/System
 License:    BSD3c
+URL:        http://www.sudo.ws/
 Source0:    %{name}-%{version}.tar.gz
 Source1:    sudo.pamd
 Source100:  sudo.yaml
@@ -54,7 +55,7 @@ minutes by default).
     --with-env-editor \
     --with-secure-path=/usr/local/bin:/bin:/usr/bin:/usr/local/sbin:/sbin:/usr/sbin:/root/bin
 
-make %{?jobs:-j%jobs}
+make %{?_smp_mflags}
 
 # >> build post
 # << build post
