@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2005, 2007-2012 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2004-2005, 2007-2013 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -19,7 +19,6 @@
 #include <config.h>
 
 #include <sys/types.h>
-#include <sys/param.h>
 #include <stdio.h>
 #ifdef STDC_HEADERS
 # include <stdlib.h>
@@ -48,12 +47,11 @@
 #include <gram.h>
 
 /* Characters that must be quoted in sudoers */
-#define SUDOERS_QUOTED	":\\,=#\""
+#define	SUDOERS_QUOTED	":\\,=#\""
 
 /* sudoers nsswitch routines */
 struct sudo_nss sudo_nss_file = {
-    &sudo_nss_file,
-    NULL,
+    { NULL, NULL },
     sudo_file_open,
     sudo_file_close,
     sudo_file_parse,
@@ -66,18 +64,12 @@ struct sudo_nss sudo_nss_file = {
 };
 
 /*
- * Parser externs.
- */
-extern FILE *yyin;
-extern char *errorfile;
-extern int errorlineno;
-extern bool parse_error;
-
-/*
  * Local prototypes.
  */
-static void print_member(struct lbuf *, char *, int, int, int);
-static int display_bound_defaults(int, struct lbuf *);
+static int display_bound_defaults(int dtype, struct lbuf *lbuf);
+static void print_member(struct lbuf *lbuf, struct member *m, int alias_type);
+static void print_member2(struct lbuf *lbuf, struct member *m,
+    const char *separator, int alias_type);
 
 int
 sudo_file_open(struct sudo_nss *nss)
@@ -100,7 +92,7 @@ sudo_file_close(struct sudo_nss *nss)
     if (nss->handle != NULL) {
 	fclose(nss->handle);
 	nss->handle = NULL;
-	yyin = NULL;
+	sudoersin = NULL;
     }
     debug_return_int(0);
 }
@@ -117,13 +109,13 @@ sudo_file_parse(struct sudo_nss *nss)
 	debug_return_int(-1);
 
     init_parser(sudoers_file, false);
-    yyin = nss->handle;
-    if (yyparse() != 0 || parse_error) {
+    sudoersin = nss->handle;
+    if (sudoersparse() != 0 || parse_error) {
 	if (errorlineno != -1) {
-	    log_error(0, _("parse error in %s near line %d"),
+	    log_warning(0, N_("parse error in %s near line %d"),
 		errorfile, errorlineno);
 	} else {
-	    log_error(0, _("parse error in %s"), errorfile);
+	    log_warning(0, N_("parse error in %s"), errorfile);
 	}
 	debug_return_int(-1);
     }
@@ -181,13 +173,13 @@ sudo_file_lookup(struct sudo_nss *nss, int validated, int pwflag)
 	CLR(validated, FLAG_NO_USER);
 	CLR(validated, FLAG_NO_HOST);
 	match = DENY;
-	tq_foreach_fwd(&userspecs, us) {
+	TAILQ_FOREACH(us, &userspecs, entries) {
 	    if (userlist_matches(sudo_user.pw, &us->users) != ALLOW)
 		continue;
-	    tq_foreach_fwd(&us->privileges, priv) {
+	    TAILQ_FOREACH(priv, &us->privileges, entries) {
 		if (hostlist_matches(&priv->hostlist) != ALLOW)
 		    continue;
-		tq_foreach_fwd(&priv->cmndlist, cs) {
+		TAILQ_FOREACH(cs, &priv->cmndlist, entries) {
 		    /* Only check the command when listing another user. */
 		    if (user_uid == 0 || list_pw == NULL ||
 			user_uid == list_pw->pw_uid ||
@@ -215,20 +207,20 @@ sudo_file_lookup(struct sudo_nss *nss, int validated, int pwflag)
     set_perms(PERM_RUNAS);
 
     match = UNSPEC;
-    tq_foreach_rev(&userspecs, us) {
+    TAILQ_FOREACH_REVERSE(us, &userspecs, userspec_list, entries) {
 	if (userlist_matches(sudo_user.pw, &us->users) != ALLOW)
 	    continue;
 	CLR(validated, FLAG_NO_USER);
-	tq_foreach_rev(&us->privileges, priv) {
+	TAILQ_FOREACH_REVERSE(priv, &us->privileges, privilege_list, entries) {
 	    host_match = hostlist_matches(&priv->hostlist);
 	    if (host_match == ALLOW)
 		CLR(validated, FLAG_NO_HOST);
 	    else
 		continue;
-	    tq_foreach_rev(&priv->cmndlist, cs) {
+	    TAILQ_FOREACH_REVERSE(cs, &priv->cmndlist, cmndspec_list, entries) {
 		matching_user = NULL;
-		runas_match = runaslist_matches(&cs->runasuserlist,
-		    &cs->runasgrouplist, &matching_user, NULL);
+		runas_match = runaslist_matches(cs->runasuserlist,
+		    cs->runasgrouplist, &matching_user, NULL);
 		if (runas_match == ALLOW) {
 		    cmnd_match = cmnd_matches(cs->cmnd);
 		    if (cmnd_match != UNSPEC) {
@@ -290,14 +282,16 @@ sudo_file_lookup(struct sudo_nss *nss, int validated, int pwflag)
     debug_return_int(validated);
 }
 
+#define	TAG_SET(tt) \
+	((tt) != UNSPEC && (tt) != IMPLIED)
+
 #define	TAG_CHANGED(t) \
-	(cs->tags.t != UNSPEC && cs->tags.t != IMPLIED && cs->tags.t != tags->t)
+	(TAG_SET(cs->tags.t) && cs->tags.t != tags->t)
 
 static void
 sudo_file_append_cmnd(struct cmndspec *cs, struct cmndtag *tags,
     struct lbuf *lbuf)
 {
-    struct member *m;
     debug_decl(sudo_file_append_cmnd, SUDO_DEBUG_NSS)
 
 #ifdef HAVE_PRIV_SET
@@ -332,59 +326,71 @@ sudo_file_append_cmnd(struct cmndspec *cs, struct cmndtag *tags,
 	lbuf_append(lbuf, cs->tags.log_output ? "LOG_OUTPUT: " : "NOLOG_OUTPUT: ");
 	tags->log_output = cs->tags.log_output;
     }
-    m = cs->cmnd;
-    print_member(lbuf, m->name, m->type, m->negated,
-	CMNDALIAS);
+    print_member(lbuf, cs->cmnd, CMNDALIAS);
     debug_return;
 }
+
+#define	RUNAS_CHANGED(cs1, cs2) \
+	(cs1 == NULL || cs2 == NULL || \
+	 cs1->runasuserlist != cs2->runasuserlist || \
+	 cs1->runasgrouplist != cs2->runasgrouplist)
 
 static int
 sudo_file_display_priv_short(struct passwd *pw, struct userspec *us,
     struct lbuf *lbuf)
 {
-    struct cmndspec *cs;
+    struct cmndspec *cs, *prev_cs;
     struct member *m;
     struct privilege *priv;
     struct cmndtag tags;
     int nfound = 0;
     debug_decl(sudo_file_display_priv_short, SUDO_DEBUG_NSS)
 
-    tq_foreach_fwd(&us->privileges, priv) {
+    /* gcc -Wuninitialized false positive */
+    tags.noexec = UNSPEC;
+    tags.setenv = UNSPEC;
+    tags.nopasswd = UNSPEC;
+    tags.log_input = UNSPEC;
+    tags.log_output = UNSPEC;
+    TAILQ_FOREACH(priv, &us->privileges, entries) {
 	if (hostlist_matches(&priv->hostlist) != ALLOW)
 	    continue;
-	tags.noexec = UNSPEC;
-	tags.setenv = UNSPEC;
-	tags.nopasswd = UNSPEC;
-	tags.log_input = UNSPEC;
-	tags.log_output = UNSPEC;
-	lbuf_append(lbuf, "    ");
-	tq_foreach_fwd(&priv->cmndlist, cs) {
-	    if (cs != tq_first(&priv->cmndlist))
+	prev_cs = NULL;
+	TAILQ_FOREACH(cs, &priv->cmndlist, entries) {
+	    if (RUNAS_CHANGED(cs, prev_cs)) {
+		if (cs != TAILQ_FIRST(&priv->cmndlist))
+		    lbuf_append(lbuf, "\n");
+		lbuf_append(lbuf, "    (");
+		if (cs->runasuserlist != NULL) {
+		    TAILQ_FOREACH(m, cs->runasuserlist, entries) {
+			if (m != TAILQ_FIRST(cs->runasuserlist))
+			    lbuf_append(lbuf, ", ");
+			print_member(lbuf, m, RUNASALIAS);
+		    }
+		} else if (cs->runasgrouplist == NULL) {
+		    lbuf_append(lbuf, "%s", def_runas_default);
+		} else {
+		    lbuf_append(lbuf, "%s", pw->pw_name);
+		}
+		if (cs->runasgrouplist != NULL) {
+		    lbuf_append(lbuf, " : ");
+		    TAILQ_FOREACH(m, cs->runasgrouplist, entries) {
+			if (m != TAILQ_FIRST(cs->runasgrouplist))
+			    lbuf_append(lbuf, ", ");
+			print_member(lbuf, m, RUNASALIAS);
+		    }
+		}
+		lbuf_append(lbuf, ") ");
+		tags.noexec = UNSPEC;
+		tags.setenv = UNSPEC;
+		tags.nopasswd = UNSPEC;
+		tags.log_input = UNSPEC;
+		tags.log_output = UNSPEC;
+	    } else if (cs != TAILQ_FIRST(&priv->cmndlist)) {
 		lbuf_append(lbuf, ", ");
-	    lbuf_append(lbuf, "(");
-	    if (!tq_empty(&cs->runasuserlist)) {
-		tq_foreach_fwd(&cs->runasuserlist, m) {
-		    if (m != tq_first(&cs->runasuserlist))
-			lbuf_append(lbuf, ", ");
-		    print_member(lbuf, m->name, m->type, m->negated,
-			RUNASALIAS);
-		}
-	    } else if (tq_empty(&cs->runasgrouplist)) {
-		lbuf_append(lbuf, "%s", def_runas_default);
-	    } else {
-		lbuf_append(lbuf, "%s", pw->pw_name);
 	    }
-	    if (!tq_empty(&cs->runasgrouplist)) {
-		lbuf_append(lbuf, " : ");
-		tq_foreach_fwd(&cs->runasgrouplist, m) {
-		    if (m != tq_first(&cs->runasgrouplist))
-			lbuf_append(lbuf, ", ");
-		    print_member(lbuf, m->name, m->type, m->negated,
-			RUNASALIAS);
-		}
-	    }
-	    lbuf_append(lbuf, ") ");
 	    sudo_file_append_cmnd(cs, &tags, lbuf);
+	    prev_cs = cs;
 	    nfound++;
 	}
 	lbuf_append(lbuf, "\n");
@@ -392,54 +398,115 @@ sudo_file_display_priv_short(struct passwd *pw, struct userspec *us,
     debug_return_int(nfound);
 }
 
+#define	TAGS_CHANGED(ot, nt) \
+	((TAG_SET((nt).setenv) && (nt).setenv != (ot).setenv) || \
+	 (TAG_SET((nt).noexec) && (nt).noexec != (ot).noexec) || \
+	 (TAG_SET((nt).nopasswd) && (nt).nopasswd != (ot).nopasswd) || \
+	 (TAG_SET((nt).log_input) && (nt).log_input != (ot).log_input) || \
+	 (TAG_SET((nt).log_output) && (nt).log_output != (ot).log_output))
+
+/*
+ * Compare the current cmndspec with the previous one to determine
+ * whether we need to start a new long entry for "sudo -ll".
+ * Returns true if we should start a new long entry, else false.
+ */
+static bool
+new_long_entry(struct cmndspec *cs, struct cmndspec *prev_cs)
+{
+    if (prev_cs == NULL)
+	return true;
+    if (RUNAS_CHANGED(cs, prev_cs) || TAGS_CHANGED(cs->tags, prev_cs->tags))
+	return true;
+#ifdef HAVE_PRIV_SET
+    if (cs->privs && (!prev_cs->privs || strcmp(cs->privs, prev_cs->privs) != 0))
+	return true;
+    if (cs->limitprivs && (!prev_cs->limitprivs || strcmp(cs->limitprivs, prev_cs->limitprivs) != 0))
+	return true;
+#endif /* HAVE_PRIV_SET */
+#ifdef HAVE_SELINUX
+    if (cs->role && (!prev_cs->role || strcmp(cs->role, prev_cs->role) != 0))
+	return true;
+    if (cs->type && (!prev_cs->type || strcmp(cs->type, prev_cs->type) != 0))
+	return true;
+#endif /* HAVE_SELINUX */
+    return false;
+}
+
 static int
 sudo_file_display_priv_long(struct passwd *pw, struct userspec *us,
     struct lbuf *lbuf)
 {
-    struct cmndspec *cs;
+    struct cmndspec *cs, *prev_cs;
     struct member *m;
     struct privilege *priv;
-    struct cmndtag tags;
-    int nfound = 0;
+    int nfound = 0, olen;
     debug_decl(sudo_file_display_priv_long, SUDO_DEBUG_NSS)
 
-    tq_foreach_fwd(&us->privileges, priv) {
+    TAILQ_FOREACH(priv, &us->privileges, entries) {
 	if (hostlist_matches(&priv->hostlist) != ALLOW)
 	    continue;
-	tags.noexec = UNSPEC;
-	tags.setenv = UNSPEC;
-	tags.nopasswd = UNSPEC;
-	tags.log_input = UNSPEC;
-	tags.log_output = UNSPEC;
-	lbuf_append(lbuf, _("\nSudoers entry:\n"));
-	tq_foreach_fwd(&priv->cmndlist, cs) {
-	    lbuf_append(lbuf, _("    RunAsUsers: "));
-	    if (!tq_empty(&cs->runasuserlist)) {
-		tq_foreach_fwd(&cs->runasuserlist, m) {
-		    if (m != tq_first(&cs->runasuserlist))
-			lbuf_append(lbuf, ", ");
-		    print_member(lbuf, m->name, m->type, m->negated,
-			RUNASALIAS);
-		}
-	    } else if (tq_empty(&cs->runasgrouplist)) {
-		lbuf_append(lbuf, "%s", def_runas_default);
-	    } else {
-		lbuf_append(lbuf, "%s", pw->pw_name);
-	    }
-	    lbuf_append(lbuf, "\n");
-	    if (!tq_empty(&cs->runasgrouplist)) {
-		lbuf_append(lbuf, _("    RunAsGroups: "));
-		tq_foreach_fwd(&cs->runasgrouplist, m) {
-		    if (m != tq_first(&cs->runasgrouplist))
-			lbuf_append(lbuf, ", ");
-		    print_member(lbuf, m->name, m->type, m->negated,
-			RUNASALIAS);
+	prev_cs = NULL;
+	TAILQ_FOREACH(cs, &priv->cmndlist, entries) {
+	    if (new_long_entry(cs, prev_cs)) {
+		lbuf_append(lbuf, _("\nSudoers entry:\n"));
+		lbuf_append(lbuf, _("    RunAsUsers: "));
+		if (cs->runasuserlist != NULL) {
+		    TAILQ_FOREACH(m, cs->runasuserlist, entries) {
+			if (m != TAILQ_FIRST(cs->runasuserlist))
+			    lbuf_append(lbuf, ", ");
+			print_member(lbuf, m, RUNASALIAS);
+		    }
+		} else if (cs->runasgrouplist == NULL) {
+		    lbuf_append(lbuf, "%s", def_runas_default);
+		} else {
+		    lbuf_append(lbuf, "%s", pw->pw_name);
 		}
 		lbuf_append(lbuf, "\n");
+		if (cs->runasgrouplist != NULL) {
+		    lbuf_append(lbuf, _("    RunAsGroups: "));
+		    TAILQ_FOREACH(m, cs->runasgrouplist, entries) {
+			if (m != TAILQ_FIRST(cs->runasgrouplist))
+			    lbuf_append(lbuf, ", ");
+			print_member(lbuf, m, RUNASALIAS);
+		    }
+		    lbuf_append(lbuf, "\n");
+		}
+		olen = lbuf->len;
+		lbuf_append(lbuf, _("    Options: "));
+		if (TAG_SET(cs->tags.setenv))
+		    lbuf_append(lbuf, "%ssetenv, ", cs->tags.setenv ? "" : "!");
+		if (TAG_SET(cs->tags.noexec))
+		    lbuf_append(lbuf, "%snoexec, ", cs->tags.noexec ? "" : "!");
+		if (TAG_SET(cs->tags.nopasswd))
+		    lbuf_append(lbuf, "%sauthenticate, ", cs->tags.nopasswd ? "!" : "");
+		if (TAG_SET(cs->tags.log_input))
+		    lbuf_append(lbuf, "%slog_input, ", cs->tags.log_input ? "" : "!");
+		if (TAG_SET(cs->tags.log_output))
+		    lbuf_append(lbuf, "%slog_output, ", cs->tags.log_output ? "" : "!");
+		if (lbuf->buf[lbuf->len - 2] == ',') {
+		    lbuf->len -= 2;	/* remove trailing ", " */
+		    lbuf_append(lbuf, "\n");
+		} else {
+		    lbuf->len = olen;	/* no options */
+		}
+#ifdef HAVE_PRIV_SET
+		if (cs->privs)
+		    lbuf_append(lbuf, "    Privs: %s\n", cs->privs);
+		if (cs->limitprivs)
+		    lbuf_append(lbuf, "    Limitprivs: %s\n", cs->limitprivs);
+#endif /* HAVE_PRIV_SET */
+#ifdef HAVE_SELINUX
+		if (cs->role)
+		    lbuf_append(lbuf, "    Role: %s\n", cs->role);
+		if (cs->type)
+		    lbuf_append(lbuf, "    Type: %s\n", cs->type);
+#endif /* HAVE_SELINUX */
+		lbuf_append(lbuf, _("    Commands:\n"));
 	    }
-	    lbuf_append(lbuf, _("    Commands:\n\t"));
-	    sudo_file_append_cmnd(cs, &tags, lbuf);
+	    lbuf_append(lbuf, "\t");
+	    print_member2(lbuf, cs->cmnd, "\n\t", CMNDALIAS);
 	    lbuf_append(lbuf, "\n");
+	    prev_cs = cs;
 	    nfound++;
 	}
     }
@@ -457,7 +524,7 @@ sudo_file_display_privs(struct sudo_nss *nss, struct passwd *pw,
     if (nss->handle == NULL)
 	goto done;
 
-    tq_foreach_fwd(&userspecs, us) {
+    TAILQ_FOREACH(us, &userspecs, entries) {
 	if (userlist_matches(pw, &us->users) != ALLOW)
 	    continue;
 
@@ -490,14 +557,14 @@ sudo_file_display_defaults(struct sudo_nss *nss, struct passwd *pw,
     else
 	prefix = ", ";
 
-    tq_foreach_fwd(&defaults, d) {
+    TAILQ_FOREACH(d, &defaults, entries) {
 	switch (d->type) {
 	    case DEFAULTS_HOST:
-		if (hostlist_matches(&d->binding) != ALLOW)
+		if (hostlist_matches(d->binding) != ALLOW)
 		    continue;
 		break;
 	    case DEFAULTS_USER:
-		if (userlist_matches(pw, &d->binding) != ALLOW)
+		if (userlist_matches(pw, d->binding) != ALLOW)
 		    continue;
 		break;
 	    case DEFAULTS_RUNAS:
@@ -547,7 +614,8 @@ static int
 display_bound_defaults(int dtype, struct lbuf *lbuf)
 {
     struct defaults *d;
-    struct member *m, *binding = NULL;
+    struct member_list *binding = NULL;
+    struct member *m;
     char *dsep;
     int atype, nfound = 0;
     debug_decl(display_bound_defaults, SUDO_DEBUG_NSS)
@@ -572,20 +640,20 @@ display_bound_defaults(int dtype, struct lbuf *lbuf)
 	default:
 	    debug_return_int(-1);
     }
-    tq_foreach_fwd(&defaults, d) {
+    TAILQ_FOREACH(d, &defaults, entries) {
 	if (d->type != dtype)
 	    continue;
 
 	nfound++;
-	if (binding != tq_first(&d->binding)) {
-	    binding = tq_first(&d->binding);
+	if (binding != d->binding) {
+	    binding = d->binding;
 	    if (nfound != 1)
 		lbuf_append(lbuf, "\n");
 	    lbuf_append(lbuf, "    Defaults%s", dsep);
-	    for (m = binding; m != NULL; m = m->next) {
-		if (m != binding)
+	    TAILQ_FOREACH(m, binding, entries) {
+		if (m != TAILQ_FIRST(binding))
 		    lbuf_append(lbuf, ",");
-		print_member(lbuf, m->name, m->type, m->negated, atype);
+		print_member(lbuf, m, atype);
 		lbuf_append(lbuf, " ");
 	    }
 	} else
@@ -615,21 +683,22 @@ sudo_file_display_cmnd(struct sudo_nss *nss, struct passwd *pw)
 	goto done;
 
     match = NULL;
-    tq_foreach_rev(&userspecs, us) {
+    TAILQ_FOREACH_REVERSE(us, &userspecs, userspec_list, entries) {
 	if (userlist_matches(pw, &us->users) != ALLOW)
 	    continue;
 
-	tq_foreach_rev(&us->privileges, priv) {
+	TAILQ_FOREACH_REVERSE(priv, &us->privileges, privilege_list, entries) {
 	    host_match = hostlist_matches(&priv->hostlist);
 	    if (host_match != ALLOW)
 		continue;
-	    tq_foreach_rev(&priv->cmndlist, cs) {
-		runas_match = runaslist_matches(&cs->runasuserlist,
-		    &cs->runasgrouplist, NULL, NULL);
+	    TAILQ_FOREACH_REVERSE(cs, &priv->cmndlist, cmndspec_list, entries) {
+		runas_match = runaslist_matches(cs->runasuserlist,
+		    cs->runasgrouplist, NULL, NULL);
 		if (runas_match == ALLOW) {
 		    cmnd_match = cmnd_matches(cs->cmnd);
 		    if (cmnd_match != UNSPEC) {
-			match = host_match && runas_match ? cs->cmnd : NULL;
+			if (cmnd_match == ALLOW)
+			    match = cs->cmnd;
 			goto matched;
 		    }
 		}
@@ -651,7 +720,7 @@ done:
  */
 static void
 _print_member(struct lbuf *lbuf, char *name, int type, int negated,
-    int alias_type)
+    const char *separator, int alias_type)
 {
     struct alias *a;
     struct member *m;
@@ -676,13 +745,15 @@ _print_member(struct lbuf *lbuf, char *name, int type, int negated,
 	    }
 	    break;
 	case ALIAS:
-	    if ((a = alias_find(name, alias_type)) != NULL) {
-		tq_foreach_fwd(&a->members, m) {
-		    if (m != tq_first(&a->members))
-			lbuf_append(lbuf, ", ");
+	    if ((a = alias_get(name, alias_type)) != NULL) {
+		TAILQ_FOREACH(m, &a->members, entries) {
+		    if (m != TAILQ_FIRST(&a->members))
+			lbuf_append(lbuf, "%s", separator);
 		    _print_member(lbuf, m->name, m->type,
-			negated ? !m->negated : m->negated, alias_type);
+			negated ? !m->negated : m->negated, separator,
+			alias_type);
 		}
+		alias_put(a);
 		break;
 	    }
 	    /* FALLTHROUGH */
@@ -694,9 +765,14 @@ _print_member(struct lbuf *lbuf, char *name, int type, int negated,
 }
 
 static void
-print_member(struct lbuf *lbuf, char *name, int type, int negated,
+print_member(struct lbuf *lbuf, struct member *m, int alias_type)
+{
+    _print_member(lbuf, m->name, m->type, m->negated, ", ", alias_type);
+}
+
+static void
+print_member2(struct lbuf *lbuf, struct member *m, const char *separator,
     int alias_type)
 {
-    alias_seqno++;
-    _print_member(lbuf, name, type, negated, alias_type);
+    _print_member(lbuf, m->name, m->type, m->negated, separator, alias_type);
 }

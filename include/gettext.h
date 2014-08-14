@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2011-2012 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -21,9 +21,7 @@
  * Solaris locale.h includes libintl.h which causes problems when we
  * redefine the gettext functions.  We include it first to avoid this.
  */
-#if defined(HAVE_SETLOCALE) && defined(__sun__) && defined(__svr4__)
-# include <locale.h>
-#endif
+#include <locale.h>
 
 #ifdef HAVE_LIBINTL_H
 
@@ -56,6 +54,7 @@
 # define _(String) gettext(String)
 # define gettext_noop(String) String
 # define N_(String) gettext_noop(String)
+# define U_(String) warning_gettext(String)
 
 #else /* !HAVE_LIBINTL_H */
 
@@ -65,6 +64,7 @@
  */
 # define _(String) String 
 # define N_(String) String
+# define U_(String) String
 # define textdomain(Domain)
 # define bindtextdomain(Package, Directory)
 # define ngettext(String, String_Plural, N) \

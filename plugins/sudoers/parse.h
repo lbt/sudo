@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 1998-2000, 2004, 2007-2011
+ * Copyright (c) 1996, 1998-2000, 2004, 2007-2014
  *	Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -15,8 +15,8 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef _SUDO_PARSE_H
-#define _SUDO_PARSE_H
+#ifndef _SUDOERS_PARSE_H
+#define _SUDOERS_PARSE_H
 
 #undef UNSPEC
 #define UNSPEC	-1
@@ -27,24 +27,37 @@
 #undef IMPLIED
 #define IMPLIED	 2
 
+#define SUDO_DIGEST_SHA224	0
+#define SUDO_DIGEST_SHA256	1
+#define SUDO_DIGEST_SHA384	2
+#define SUDO_DIGEST_SHA512	3
+#define SUDO_DIGEST_INVALID	4
+
+struct sudo_digest {
+    unsigned int digest_type;
+    char *digest_str;
+};
+
 /*
- * A command with args. XXX - merge into struct member.
+ * A command with option args and digest.
+ * XXX - merge into struct member
  */
 struct sudo_command {
     char *cmnd;
     char *args;
+    struct sudo_digest *digest;
 };
 
 /*
  * Tags associated with a command.
- * Possible values: true, false, UNSPEC.
+ * Possible values: true, false, IMPLIED, UNSPEC.
  */
 struct cmndtag {
-    __signed int nopasswd: 3;
-    __signed int noexec: 3;
-    __signed int setenv: 3;
-    __signed int log_input: 3;
-    __signed int log_output: 3;
+    signed int nopasswd: 3;
+    signed int noexec: 3;
+    signed int setenv: 3;
+    signed int log_input: 3;
+    signed int log_output: 3;
 };
 
 /*
@@ -71,31 +84,30 @@ struct solaris_privs_info {
  * modelled after the yacc grammar.
  *
  * Other than the alias struct, which is stored in a red-black tree,
- * the data structure used is basically a doubly-linked tail queue without
- * a separate head struct--the first entry acts as the head where the prev
- * pointer does double duty as the tail pointer.  This makes it possible
- * to trivally append sub-lists.  In addition, the prev pointer is always
- * valid (even if it points to itself).  Unlike a circle queue, the next
- * pointer of the last entry is NULL and does not point back to the head.
- *
- * Note that each list struct must contain a "prev" and "next" pointer as
- * the first two members of the struct (in that order).
+ * the data structure used is a doubly-linked tail queue.  While sudoers
+ * is being parsed, a headless tail queue is used where the first entry
+ * acts as the head and the prev pointer does double duty as the tail pointer.
+ * This makes it possible to trivally append sub-lists.  In addition, the prev
+ * pointer is always valid (even if it points to itself).  Unlike a circle
+ * queue, the next pointer of the last entry is NULL and does not point back
+ * to the head.  When the tail queue is finalized, it is converted to a
+ * normal BSD tail queue.
  */
 
 /*
  * Tail queue list head structure.
  */
-TQ_DECLARE(defaults)
-TQ_DECLARE(userspec)
-TQ_DECLARE(member)
-TQ_DECLARE(privilege)
-TQ_DECLARE(cmndspec)
+TAILQ_HEAD(defaults_list, defaults);
+TAILQ_HEAD(userspec_list, userspec);
+TAILQ_HEAD(member_list, member);
+TAILQ_HEAD(privilege_list, privilege);
+TAILQ_HEAD(cmndspec_list, cmndspec);
 
 /*
  * Structure describing a user specification and list thereof.
  */
 struct userspec {
-    struct userspec *prev, *next;
+    TAILQ_ENTRY(userspec) entries;
     struct member_list users;		/* list of users */
     struct privilege_list privileges;	/* list of privileges */
 };
@@ -104,7 +116,7 @@ struct userspec {
  * Structure describing a privilege specification.
  */
 struct privilege {
-    struct privilege *prev, *next;
+    TAILQ_ENTRY(privilege) entries;
     struct member_list hostlist;	/* list of hosts */
     struct cmndspec_list cmndlist;	/* list of Cmnd_Specs */
 };
@@ -113,9 +125,9 @@ struct privilege {
  * Structure describing a linked list of Cmnd_Specs.
  */
 struct cmndspec {
-    struct cmndspec *prev, *next;
-    struct member_list runasuserlist;	/* list of runas users */
-    struct member_list runasgrouplist;	/* list of runas groups */
+    TAILQ_ENTRY(cmndspec) entries;
+    struct member_list *runasuserlist;	/* list of runas users */
+    struct member_list *runasgrouplist;	/* list of runas groups */
     struct member *cmnd;		/* command to allow/deny */
     struct cmndtag tags;		/* tag specificaion */
 #ifdef HAVE_SELINUX
@@ -130,7 +142,7 @@ struct cmndspec {
  * Generic structure to hold users, hosts, commands.
  */
 struct member {
-    struct member *prev, *next;
+    TAILQ_ENTRY(member) entries;
     char *name;				/* member name */
     short type;				/* type (see gram.h) */
     short negated;			/* negated via '!'? */
@@ -148,7 +160,7 @@ struct runascontainer {
 struct alias {
     char *name;				/* alias name */
     unsigned short type;		/* {USER,HOST,RUNAS,CMND}ALIAS */
-    unsigned short seqno;		/* sequence number */
+    bool used;				/* "used" flag for cycle detection */
     struct member_list members;		/* list of alias members */
 };
 
@@ -156,10 +168,10 @@ struct alias {
  * Structure describing a Defaults entry and a list thereof.
  */
 struct defaults {
-    struct defaults *prev, *next;
+    TAILQ_ENTRY(defaults) entries;
     char *var;				/* variable name */
     char *val;				/* variable value */
-    struct member_list binding;		/* user/host/runas binding */
+    struct member_list *binding;	/* user/host/runas binding */
     int type;				/* DEFAULTS{,_USER,_RUNAS,_HOST} */
     int op;				/* true, false, '+', '-' */
 };
@@ -170,35 +182,43 @@ struct defaults {
 extern struct userspec_list userspecs;
 extern struct defaults_list defaults;
 
-/*
- * Alias sequence number to avoid loops.
- */
-extern unsigned int alias_seqno;
-
-/*
- * Prototypes
- */
-char *alias_add(char *, int, struct member *);
-bool addr_matches(char *);
-int cmnd_matches(struct member *);
-int cmndlist_matches(struct member_list *);
-bool command_matches(char *, char *);
-int hostlist_matches(struct member_list *);
-bool hostname_matches(char *, char *, char *);
-bool netgr_matches(char *, char *, char *, char *);
+/* alias.c */
 bool no_aliases(void);
-int runaslist_matches(struct member_list *, struct member_list *, struct member **, struct member **);
-int userlist_matches(struct passwd *, struct member_list *);
-bool usergr_matches(char *, char *, struct passwd *);
-bool userpw_matches(char *, char *, struct passwd *);
-bool group_matches(char *, struct group *);
-struct alias *alias_find(char *, int);
-struct alias *alias_remove(char *, int);
-void alias_free(void *);
-void alias_apply(int (*)(void *, void *), void *);
+char *alias_add(char *name, int type, struct member *members);
+int alias_compare(const void *a1, const void *a2);
+struct alias *alias_get(char *name, int type);
+struct alias *alias_remove(char *name, int type);
+void alias_apply(int (*func)(void *, void *), void *cookie);
+void alias_free(void *a);
+void alias_put(struct alias *a);
 void init_aliases(void);
-void init_lexer(void);
-void init_parser(const char *, bool);
-int alias_compare(const void *, const void *);
 
-#endif /* _SUDO_PARSE_H */
+/* gram.c */
+void init_parser(const char *, bool);
+
+/* match_addr.c */
+bool addr_matches(char *n);
+
+/* match.c */
+bool command_matches(const char *sudoers_cmnd, const char *sudoers_args, const struct sudo_digest *digest);
+bool group_matches(const char *sudoers_group, const struct group *gr);
+bool hostname_matches(const char *shost, const char *lhost, const char *pattern);
+bool netgr_matches(const char *netgr, const char *lhost, const char *shost, const char *user);
+bool usergr_matches(const char *group, const char *user, const struct passwd *pw);
+bool userpw_matches(const char *sudoers_user, const char *user, const struct passwd *pw);
+int cmnd_matches(const struct member *m);
+int cmndlist_matches(const struct member_list *list);
+int hostlist_matches(const struct member_list *list);
+int runaslist_matches(const struct member_list *user_list, const struct member_list *group_list, struct member **matching_user, struct member **matching_group);
+int userlist_matches(const struct passwd *pw, const struct member_list *list);
+
+/* toke.c */
+void init_lexer(void);
+
+/* hexchar.c */
+int hexchar(const char *s);
+
+/* base64.c */
+size_t base64_decode(const char *str, unsigned char *dst, size_t dsize);
+
+#endif /* _SUDOERS_PARSE_H */

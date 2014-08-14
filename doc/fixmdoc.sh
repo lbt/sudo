@@ -1,4 +1,19 @@
 #!/bin/sh
+#
+# Copyright (c) 2012-2013 Todd C. Miller <Todd.Miller@courtesan.com>
+#
+# Permission to use, copy, modify, and distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+#
 
 OUTFILE="$1"
 rm -f "$OUTFILE"
@@ -18,7 +33,7 @@ case "$OUTFILE" in
 	# BSD auth
 	BA_FLAG=
 	if [ X"$BAMAN" != X"1" ]; then
-		BA_FLAG='/^.*\n\.Op Fl a Ar auth_type/{;N;/^.*\n\.Ek$/d;};'
+		BA_FLAG='/^.*\n\.Op Fl a Ar type/{;N;/^.*\n\.Ek$/d;};'
 		cat >>"$OUTFILE" <<-'EOF'
 			/^\.It Fl a Ar type/,/BSD authentication\.$/ {
 				d
@@ -47,10 +62,10 @@ case "$OUTFILE" in
 	if [ X"$SEMAN" != X"1" ]; then
 		SE_FLAG='/^.*\n\.Op Fl r Ar role/{;N;/^.*\n\.Ek$/d;};/^.*\n\.Op Fl t Ar type/{;N;/^.*\n\.Ek$/d;};'
 		cat >>"$OUTFILE" <<-'EOF'
-			/^\.It Fl r Ar role/,/newline character\.$/ {
+			/^\.It Fl r Ar role/,/^\.Ar role \.$/ {
 				d
 			}
-			/^\.It Fl t Ar type/,/specified role\.$/ {
+			/^\.It Fl t Ar type/,/derived from the role\.$/ {
 				d
 			}
 			/^SELinux role and type$/ {

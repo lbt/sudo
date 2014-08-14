@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 1998-2005, 2007-2010
+ * Copyright (c) 1996, 1998-2005, 2007-2014
  *	Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -32,7 +32,6 @@ struct rtentry;
 
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <sys/param.h>
 #include <sys/time.h>
 #include <sys/ioctl.h>
 #if defined(HAVE_SYS_SOCKIO_H) && !defined(SIOCGIFCONF)
@@ -56,6 +55,11 @@ struct rtentry;
 #ifdef HAVE_STRINGS_H
 # include <strings.h>
 #endif /* HAVE_STRINGS_H */
+#ifdef HAVE_STDBOOL_H
+# include <stdbool.h>
+#else
+# include "compat/stdbool.h"
+#endif /* HAVE_STDBOOL_H */
 #ifdef HAVE_UNISTD_H
 # include <unistd.h>
 #endif /* HAVE_UNISTD_H */
@@ -80,13 +84,14 @@ struct rtentry;
 # include <ifaddrs.h>
 #endif
 
+#define DEFAULT_TEXT_DOMAIN	"sudo"
+#include "gettext.h"		/* must be included before missing.h */
+
 #include "missing.h"
 #include "alloc.h"
-#include "error.h"
+#include "fatal.h"
+#include "sudo_conf.h"
 #include "sudo_debug.h"
-
-#define DEFAULT_TEXT_DOMAIN	"sudo"
-#include "gettext.h"
 
 /* Minix apparently lacks IFF_LOOPBACK */
 #ifndef IFF_LOOPBACK
@@ -112,11 +117,11 @@ get_net_ifs(char **addrinfo)
     struct sockaddr_in6 *sin6;
     char addrbuf[INET6_ADDRSTRLEN];
 #endif
-    int ailen, i, len, num_interfaces = 0;
+    int ailen, len, num_interfaces = 0;
     char *cp;
     debug_decl(get_net_ifs, SUDO_DEBUG_NETIF)
 
-    if (getifaddrs(&ifaddrs))
+    if (!sudo_conf_probe_interfaces() || getifaddrs(&ifaddrs) != 0)
 	debug_return_int(0);
 
     /* Allocate space for the interfaces info string. */
@@ -141,7 +146,7 @@ get_net_ifs(char **addrinfo)
     *addrinfo = cp = emalloc(ailen);
 
     /* Store the IP addr/netmask pairs. */
-    for (ifa = ifaddrs, i = 0; ifa != NULL; ifa = ifa -> ifa_next) {
+    for (ifa = ifaddrs; ifa != NULL; ifa = ifa -> ifa_next) {
 	/* Skip interfaces marked "down" and "loopback". */
 	if (ifa->ifa_addr == NULL || ifa->ifa_netmask == NULL ||
 	    !ISSET(ifa->ifa_flags, IFF_UP) || ISSET(ifa->ifa_flags, IFF_LOOPBACK))
@@ -154,7 +159,7 @@ get_net_ifs(char **addrinfo)
 		    "%s%s/", cp == *addrinfo ? "" : " ",
 		    inet_ntoa(sin->sin_addr));
 		if (len <= 0 || len >= ailen - (*addrinfo - cp)) {
-		    warningx(_("load_interfaces: overflow detected"));
+		    warningx(U_("load_interfaces: overflow detected"));
 		    goto done;
 		}
 		cp += len;
@@ -163,7 +168,7 @@ get_net_ifs(char **addrinfo)
 		len = snprintf(cp, ailen - (*addrinfo - cp),
 		    "%s", inet_ntoa(sin->sin_addr));
 		if (len <= 0 || len >= ailen - (*addrinfo - cp)) {
-		    warningx(_("load_interfaces: overflow detected"));
+		    warningx(U_("load_interfaces: overflow detected"));
 		    goto done;
 		}
 		cp += len;
@@ -175,7 +180,7 @@ get_net_ifs(char **addrinfo)
 		len = snprintf(cp, ailen - (*addrinfo - cp),
 		    "%s%s/", cp == *addrinfo ? "" : " ", addrbuf);
 		if (len <= 0 || len >= ailen - (*addrinfo - cp)) {
-		    warningx(_("load_interfaces: overflow detected"));
+		    warningx(U_("load_interfaces: overflow detected"));
 		    goto done;
 		}
 		cp += len;
@@ -184,7 +189,7 @@ get_net_ifs(char **addrinfo)
 		inet_ntop(AF_INET6, &sin6->sin6_addr, addrbuf, sizeof(addrbuf));
 		len = snprintf(cp, ailen - (*addrinfo - cp), "%s", addrbuf);
 		if (len <= 0 || len >= ailen - (*addrinfo - cp)) {
-		    warningx(_("load_interfaces: overflow detected"));
+		    warningx(U_("load_interfaces: overflow detected"));
 		    goto done;
 		}
 		cp += len;
@@ -222,9 +227,12 @@ get_net_ifs(char **addrinfo)
 #endif /* _ISC */
     debug_decl(get_net_ifs, SUDO_DEBUG_NETIF)
 
+    if (!sudo_conf_probe_interfaces())
+	debug_return_int(0);
+
     sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0)
-	error(1, _("unable to open socket"));
+	fatal(U_("unable to open socket"));
 
     /*
      * Get interface configuration or return.
@@ -295,7 +303,7 @@ get_net_ifs(char **addrinfo)
 	    "%s%s/", cp == *addrinfo ? "" : " ",
 	    inet_ntoa(sin->sin_addr));
 	if (len <= 0 || len >= ailen - (*addrinfo - cp)) {
-	    warningx(_("load_interfaces: overflow detected"));
+	    warningx(U_("load_interfaces: overflow detected"));
 	    goto done;
 	}
 	cp += len;
@@ -319,7 +327,7 @@ get_net_ifs(char **addrinfo)
 	len = snprintf(cp, ailen - (*addrinfo - cp),
 	    "%s", inet_ntoa(sin->sin_addr));
 	if (len <= 0 || len >= ailen - (*addrinfo - cp)) {
-	    warningx(_("load_interfaces: overflow detected"));
+	    warningx(U_("load_interfaces: overflow detected"));
 	    goto done;
 	}
 	cp += len;

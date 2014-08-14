@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999-2005, 2007-2011 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 1999-2005, 2007-2013 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -21,7 +21,6 @@
 #include <config.h>
 
 #include <sys/types.h>
-#include <sys/param.h>
 #include <stdio.h>
 #ifdef STDC_HEADERS
 # include <stdlib.h>
@@ -66,7 +65,7 @@ sudo_aix_verify(struct passwd *pw, char *prompt, sudo_auth *auth)
 	efree(message);
 	message = NULL;
 	result = authenticate(pw->pw_name, pass, &reenter, &message);
-	zero_bytes(pass, strlen(pass));
+	memset_s(pass, SUDO_CONV_REPL_MAX, 0, strlen(pass));
 	prompt = message;
     } while (reenter);
 

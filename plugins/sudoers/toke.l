@@ -1,6 +1,6 @@
 %{
 /*
- * Copyright (c) 1996, 1998-2005, 2007-2012
+ * Copyright (c) 1996, 1998-2005, 2007-2013
  *	Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -26,7 +26,6 @@
 #include <config.h>
 
 #include <sys/types.h>
-#include <sys/param.h>
 #include <sys/stat.h>
 #include <stdio.h>
 #ifdef STDC_HEADERS
@@ -43,6 +42,11 @@
 #ifdef HAVE_STRINGS_H
 # include <strings.h>
 #endif /* HAVE_STRINGS_H */
+#if defined(HAVE_STDINT_H)
+# include <stdint.h>
+#elif defined(HAVE_INTTYPES_H)
+# include <inttypes.h>
+#endif
 #ifdef HAVE_UNISTD_H
 # include <unistd.h>
 #endif /* HAVE_UNISTD_H */
@@ -72,14 +76,12 @@
 #include "toke.h"
 #include <gram.h>
 #include "lbuf.h"
+#include "sha2.h"
 #include "secure_path.h"
 
-extern YYSTYPE yylval;
-extern bool parse_error;
-extern bool sudoers_warnings;
-int sudolineno;
-int last_token;
-char *sudoers;
+int sudolineno;			/* current sudoers line number. */
+int last_token;			/* last token that was parsed. */
+char *sudoers;			/* sudoers file being parsed. */
 
 /* Default sudoers path, mode and owner (may be set via sudo.conf) */
 const char *sudoers_file = _PATH_SUDOERS;
@@ -89,6 +91,7 @@ gid_t sudoers_gid = SUDOERS_GID;
 
 static bool continued, sawspace;
 static int prev_state;
+static int digest_len;
 
 static bool _push_include(char *, bool);
 static bool pop_include(void);
@@ -101,7 +104,7 @@ int (*trace_print)(const char *msg) = sudoers_trace_print;
 	return (n);		\
 } while (0)
 
-#define ECHO	ignore_result(fwrite(yytext, yyleng, 1, yyout))
+#define ECHO	ignore_result(fwrite(sudoerstext, sudoersleng, 1, sudoersout))
 
 #define	push_include(_p)	(_push_include((_p), false))
 #define	push_includedir(_p)	(_push_include((_p), true))
@@ -122,12 +125,14 @@ DEFVAR			[a-z_]+
 %option noinput
 %option nounput
 %option noyywrap
+%option prefix="sudoers"
 
 %s	GOTDEFS
 %x	GOTCMND
 %x	STARTDEFS
 %x	INDEFS
 %x	INSTR
+%s	WANTDIGEST
 
 %%
 <GOTDEFS>[[:blank:]]*,[[:blank:]]* {
@@ -140,7 +145,7 @@ DEFVAR			[a-z_]+
 <STARTDEFS>{DEFVAR}	{
 			    BEGIN INDEFS;
 			    LEXTRACE("DEFVAR ");
-			    if (!fill(yytext, yyleng))
+			    if (!fill(sudoerstext, sudoersleng))
 				yyterminate();
 			    LEXRETURN(DEFVAR);
 			}
@@ -169,14 +174,14 @@ DEFVAR			[a-z_]+
 
     \"			{
 			    LEXTRACE("BEGINSTR ");
-			    yylval.string = NULL;
+			    sudoerslval.string = NULL;
 			    prev_state = YY_START;
 			    BEGIN INSTR;
 			}
 
     {ENVAR}		{
 			    LEXTRACE("WORD(2) ");
-			    if (!fill(yytext, yyleng))
+			    if (!fill(sudoerstext, sudoersleng))
 				yyterminate();
 			    LEXRETURN(WORD);
 			}
@@ -193,23 +198,23 @@ DEFVAR			[a-z_]+
 			    LEXTRACE("ENDSTR ");
 			    BEGIN prev_state;
 
-			    if (yylval.string == NULL) {
+			    if (sudoerslval.string == NULL) {
 				LEXTRACE("ERROR "); /* empty string */
 				LEXRETURN(ERROR);
 			    }
 			    if (prev_state == INITIAL) {
-				switch (yylval.string[0]) {
+				switch (sudoerslval.string[0]) {
 				case '%':
-				    if (yylval.string[1] == '\0' ||
-					(yylval.string[1] == ':' &&
-					yylval.string[2] == '\0')) {
+				    if (sudoerslval.string[1] == '\0' ||
+					(sudoerslval.string[1] == ':' &&
+					sudoerslval.string[2] == '\0')) {
 					LEXTRACE("ERROR "); /* empty group */
 					LEXRETURN(ERROR);
 				    }
 				    LEXTRACE("USERGROUP ");
 				    LEXRETURN(USERGROUP);
 				case '+':
-				    if (yylval.string[1] == '\0') {
+				    if (sudoerslval.string[1] == '\0') {
 					LEXTRACE("ERROR "); /* empty netgroup */
 					LEXRETURN(ERROR);
 				    }
@@ -223,13 +228,13 @@ DEFVAR			[a-z_]+
 
     \\			{
 			    LEXTRACE("BACKSLASH ");
-			    if (!append(yytext, yyleng))
+			    if (!append(sudoerstext, sudoersleng))
 				yyterminate();
 			}
 
     ([^\"\n\\]|\\\")+	{
 			    LEXTRACE("STRBODY ");
-			    if (!append(yytext, yyleng))
+			    if (!append(sudoerstext, sudoersleng))
 				yyterminate();
 			}
 }
@@ -238,7 +243,7 @@ DEFVAR			[a-z_]+
     \\[\*\?\[\]\!]	{
 			    /* quoted fnmatch glob char, pass verbatim */
 			    LEXTRACE("QUOTEDCHAR ");
-			    if (!fill_args(yytext, 2, sawspace))
+			    if (!fill_args(sudoerstext, 2, sawspace))
 				yyterminate();
 			    sawspace = false;
 			}
@@ -246,7 +251,7 @@ DEFVAR			[a-z_]+
     \\[:\\,= \t#]	{
 			    /* quoted sudoers special char, strip backslash */
 			    LEXTRACE("QUOTEDCHAR ");
-			    if (!fill_args(yytext + 1, 1, sawspace))
+			    if (!fill_args(sudoerstext + 1, 1, sawspace))
 				yyterminate();
 			    sawspace = false;
 			}
@@ -259,11 +264,45 @@ DEFVAR			[a-z_]+
 
     [^#\\:, \t\n]+ 	{
 			    LEXTRACE("ARG ");
-			    if (!fill_args(yytext, yyleng, sawspace))
+			    if (!fill_args(sudoerstext, sudoersleng, sawspace))
 				yyterminate();
 			    sawspace = false;
 			}			/* a command line arg */
 }
+
+<WANTDIGEST>[[:xdigit:]]+ {
+			    /* Only return DIGEST if the length is correct. */
+			    if (sudoersleng == digest_len * 2) {
+				if (!fill(sudoerstext, sudoersleng))
+				    yyterminate();
+				BEGIN INITIAL;
+				LEXTRACE("DIGEST ");
+				LEXRETURN(DIGEST);
+			    }
+			    BEGIN INITIAL;
+			    yyless(sudoersleng);
+			} /* hex digest */
+
+<WANTDIGEST>[A-Za-z0-9\+/=]+ {
+			    /* Only return DIGEST if the length is correct. */
+			    int len;
+			    if (sudoerstext[sudoersleng - 1] == '=') {
+				/* use padding */
+				len = 4 * ((digest_len + 2) / 3);
+			    } else {
+				/* no padding */
+				len = (4 * digest_len + 2) / 3;
+			    }
+			    if (sudoersleng == len) {
+				if (!fill(sudoerstext, sudoersleng))
+				    yyterminate();
+				BEGIN INITIAL;
+				LEXTRACE("DIGEST ");
+				LEXRETURN(DIGEST);
+			    }
+			    BEGIN INITIAL;
+			    yyless(sudoersleng);
+			} /* base64 digest */
 
 <INITIAL>^#include[[:blank:]]+.*\n {
 			    char *path;
@@ -273,7 +312,7 @@ DEFVAR			[a-z_]+
 				LEXRETURN(ERROR);
 			    }
 
-			    if ((path = parse_include(yytext)) == NULL)
+			    if ((path = parse_include(sudoerstext)) == NULL)
 				yyterminate();
 
 			    LEXTRACE("INCLUDE\n");
@@ -291,7 +330,7 @@ DEFVAR			[a-z_]+
 				LEXRETURN(ERROR);
 			    }
 
-			    if ((path = parse_include(yytext)) == NULL)
+			    if ((path = parse_include(sudoerstext)) == NULL)
 				yyterminate();
 
 			    LEXTRACE("INCLUDEDIR\n");
@@ -313,11 +352,11 @@ DEFVAR			[a-z_]+
 				LEXRETURN(ERROR);
 			    }
 
-			    for (n = 0; isblank((unsigned char)yytext[n]); n++)
+			    for (n = 0; isblank((unsigned char)sudoerstext[n]); n++)
 				continue;
 			    n += sizeof("Defaults") - 1;
-			    if ((deftype = yytext[n++]) != '\0') {
-				while (isblank((unsigned char)yytext[n]))
+			    if ((deftype = sudoerstext[n++]) != '\0') {
+				while (isblank((unsigned char)sudoerstext[n]))
 				    n++;
 			    }
 			    BEGIN GOTDEFS;
@@ -352,9 +391,9 @@ DEFVAR			[a-z_]+
 				LEXRETURN(ERROR);
 			    }
 
-			    for (n = 0; isblank((unsigned char)yytext[n]); n++)
+			    for (n = 0; isblank((unsigned char)sudoerstext[n]); n++)
 				continue;
-			    switch (yytext[n]) {
+			    switch (sudoerstext[n]) {
 				case 'H':
 				    LEXTRACE("HOSTALIAS ");
 				    LEXRETURN(HOSTALIAS);
@@ -430,7 +469,7 @@ NOLOG_INPUT[[:blank:]]*:	{
 
 \+{WORD}		{
 			    /* netgroup */
-			    if (!fill(yytext, yyleng))
+			    if (!fill(sudoerstext, sudoersleng))
 				yyterminate();
 			    LEXTRACE("NETGROUP ");
 			    LEXRETURN(NETGROUP);
@@ -438,43 +477,43 @@ NOLOG_INPUT[[:blank:]]*:	{
 
 \%:?({WORD}|{ID})	{
 			    /* group */
-			    if (!fill(yytext, yyleng))
+			    if (!fill(sudoerstext, sudoersleng))
 				yyterminate();
 			    LEXTRACE("USERGROUP ");
 			    LEXRETURN(USERGROUP);
 			}
 
 {IPV4ADDR}(\/{IPV4ADDR})? {
-			    if (!fill(yytext, yyleng))
+			    if (!fill(sudoerstext, sudoersleng))
 				yyterminate();
 			    LEXTRACE("NTWKADDR ");
 			    LEXRETURN(NTWKADDR);
 			}
 
 {IPV4ADDR}\/([12]?[0-9]|3[0-2]) {
-			    if (!fill(yytext, yyleng))
+			    if (!fill(sudoerstext, sudoersleng))
 				yyterminate();
 			    LEXTRACE("NTWKADDR ");
 			    LEXRETURN(NTWKADDR);
 			}
 
 {IPV6ADDR}(\/{IPV6ADDR})? {
-			    if (!ipv6_valid(yytext)) {
+			    if (!ipv6_valid(sudoerstext)) {
 				LEXTRACE("ERROR ");
 				LEXRETURN(ERROR);
 			    }
-			    if (!fill(yytext, yyleng))
+			    if (!fill(sudoerstext, sudoersleng))
 				yyterminate();
 			    LEXTRACE("NTWKADDR ");
 			    LEXRETURN(NTWKADDR);
 			}
 
 {IPV6ADDR}\/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8]) {
-			    if (!ipv6_valid(yytext)) {
+			    if (!ipv6_valid(sudoerstext)) {
 				LEXTRACE("ERROR ");
 				LEXRETURN(ERROR);
 			    }
-			    if (!fill(yytext, yyleng))
+			    if (!fill(sudoerstext, sudoersleng))
 				yyterminate();
 			    LEXTRACE("NTWKADDR ");
 			    LEXRETURN(NTWKADDR);
@@ -523,52 +562,81 @@ ALL {
 
 [[:upper:]][[:upper:][:digit:]_]* {
 			got_alias:
-			    if (!fill(yytext, yyleng))
+			    if (!fill(sudoerstext, sudoersleng))
 				yyterminate();
 			    LEXTRACE("ALIAS ");
 			    LEXRETURN(ALIAS);
 			}
 
 <GOTDEFS>({PATH}|sudoedit) {
+			    /* XXX - no way to specify digest for command */
 			    /* no command args allowed for Defaults!/path */
-			    if (!fill_cmnd(yytext, yyleng))
+			    if (!fill_cmnd(sudoerstext, sudoersleng))
 				yyterminate();
 			    LEXTRACE("COMMAND ");
 			    LEXRETURN(COMMAND);
 			}
 
+sha224			{
+			    digest_len = SHA224_DIGEST_LENGTH;
+			    BEGIN WANTDIGEST;
+			    LEXTRACE("SHA224 ");
+			    LEXRETURN(SHA224);
+			}
+
+sha256			{
+			    digest_len = SHA256_DIGEST_LENGTH;
+			    BEGIN WANTDIGEST;
+			    LEXTRACE("SHA256 ");
+			    LEXRETURN(SHA256);
+			}
+
+sha384			{
+			    digest_len = SHA384_DIGEST_LENGTH;
+			    BEGIN WANTDIGEST;
+			    LEXTRACE("SHA384 ");
+			    LEXRETURN(SHA384);
+			}
+
+sha512			{
+			    digest_len = SHA512_DIGEST_LENGTH;
+			    BEGIN WANTDIGEST;
+			    LEXTRACE("SHA512 ");
+			    LEXRETURN(SHA512);
+			}
+
 sudoedit		{
 			    BEGIN GOTCMND;
 			    LEXTRACE("COMMAND ");
-			    if (!fill_cmnd(yytext, yyleng))
+			    if (!fill_cmnd(sudoerstext, sudoersleng))
 				yyterminate();
 			}			/* sudo -e */
 
 {PATH}			{
 			    /* directories can't have args... */
-			    if (yytext[yyleng - 1] == '/') {
+			    if (sudoerstext[sudoersleng - 1] == '/') {
 				LEXTRACE("COMMAND ");
-				if (!fill_cmnd(yytext, yyleng))
+				if (!fill_cmnd(sudoerstext, sudoersleng))
 				    yyterminate();
 				LEXRETURN(COMMAND);
 			    } else {
 				BEGIN GOTCMND;
 				LEXTRACE("COMMAND ");
-				if (!fill_cmnd(yytext, yyleng))
+				if (!fill_cmnd(sudoerstext, sudoersleng))
 				    yyterminate();
 			    }
 			}			/* a pathname */
 
 <INITIAL,GOTDEFS>\" {
 			    LEXTRACE("BEGINSTR ");
-			    yylval.string = NULL;
+			    sudoerslval.string = NULL;
 			    prev_state = YY_START;
 			    BEGIN INSTR;
 			}
 
 <INITIAL,GOTDEFS>({ID}|{WORD}) {
 			    /* a word */
-			    if (!fill(yytext, yyleng))
+			    if (!fill(sudoerstext, sudoersleng))
 				yyterminate();
 			    LEXTRACE("WORD(5) ");
 			    LEXRETURN(WORD);
@@ -600,7 +668,7 @@ sudoedit		{
 			}			/* return ':' */
 
 <*>!+			{
-			    if (yyleng & 1) {
+			    if (sudoersleng & 1) {
 				LEXTRACE("!");
 				LEXRETURN('!');	/* return '!' */
 			    }
@@ -628,10 +696,16 @@ sudoedit		{
 			    continued = true;
 			}			/* throw away EOL after \ */
 
-<INITIAL,STARTDEFS,INDEFS>#(-[^\n0-9].*|[^\n0-9-].*)?\n	{
-			    BEGIN INITIAL;
-			    sudolineno++;
-			    continued = false;
+<INITIAL,STARTDEFS,INDEFS>#(-[^\n0-9].*|[^\n0-9-].*)?\n?	{
+			    if (sudoerstext[sudoersleng - 1] == '\n') {
+				/* comment ending in a newline */
+				BEGIN INITIAL;
+				sudolineno++;
+				continued = false;
+			    } else if (!feof(yyin)) {
+				LEXTRACE("ERROR ");
+				LEXRETURN(ERROR);
+			    }
 			    LEXTRACE("#\n");
 			    LEXRETURN(COMMENT);
 			}			/* comment, not uid/gid */
@@ -653,50 +727,55 @@ sudoedit		{
 
 %%
 struct path_list {
+    SLIST_ENTRY(path_list) entries;
     char *path;
-    struct path_list *next;
 };
+
+SLIST_HEAD(path_list_head, path_list);
 
 struct include_stack {
     YY_BUFFER_STATE bs;
     char *path;
-    struct path_list *more; /* more files in case of includedir */
+    struct path_list_head more; /* more files in case of includedir */
     int lineno;
     bool keepopen;
 };
 
+/*
+ * Compare two struct path_list structs in reverse order.
+ */
 static int
 pl_compare(const void *v1, const void *v2)
 {
     const struct path_list * const *p1 = v1;
     const struct path_list * const *p2 = v2;
 
-    return strcmp((*p1)->path, (*p2)->path);
+    return strcmp((*p2)->path, (*p1)->path);
 }
 
 static char *
 switch_dir(struct include_stack *stack, char *dirpath)
 {
     DIR *dir;
-    int i, count = 0;
+    unsigned int i, count = 0;
+    unsigned int max_paths = 32;
     char *path = NULL;
     struct dirent *dent;
     struct stat sb;
-    struct path_list *pl, *first = NULL;
-    struct path_list **sorted = NULL;
+    struct path_list *pl, **paths = NULL;
     debug_decl(switch_dir, SUDO_DEBUG_PARSER)
 
     if (!(dir = opendir(dirpath))) {
 	if (errno != ENOENT) {
-	    char *errbuf;
-	    if (asprintf(&errbuf, _("%s: %s"), dirpath, strerror(errno)) != -1) {
-		yyerror(errbuf);
-		free(errbuf);
-	    } else {
-		yyerror(_("unable to allocate memory"));
-	    }
+	    warning("%s", dirpath);
+	    sudoerserror(NULL);
 	}
 	goto done;
+    }
+    paths = malloc(sizeof(*paths) * max_paths);
+    if (paths == NULL) {
+	closedir(dir);
+	goto bad;
     }
     while ((dent = readdir(dir))) {
 	/* Ignore files that end in '~' or have a '.' in them. */
@@ -717,53 +796,47 @@ switch_dir(struct include_stack *stack, char *dirpath)
 	if (pl == NULL)
 	    goto bad;
 	pl->path = path;
-	pl->next = first;
-	first = pl;
-	count++;
+	if (count >= max_paths) {
+	    struct path_list **tmp;
+	    max_paths <<= 1;
+	    tmp = realloc(paths, sizeof(*paths) * max_paths);
+	    if (tmp == NULL) {
+		closedir(dir);
+		goto bad;
+	    }
+	    paths = tmp;
+	}
+	paths[count++] = pl;
+	path = NULL;
     }
     closedir(dir);
 
     if (count == 0)
 	goto done;
 
-    /* Sort the list as an array. */
-    sorted = malloc(sizeof(*sorted) * count);
-    if (sorted == NULL)
-	goto bad;
-    pl = first;
-    for (i = 0; i < count; i++) {
-	sorted[i] = pl;
-	pl = pl->next;
-    }
-    qsort(sorted, count, sizeof(*sorted), pl_compare);
+    /* Sort the list as an array in reverse order. */
+    qsort(paths, count, sizeof(*paths), pl_compare);
 
-    /* Apply sorting to the list. */
-    first = sorted[0];
-    sorted[count - 1]->next = NULL;
-    for (i = 1; i < count; i++)
-	sorted[i - 1]->next = sorted[i];
-    efree(sorted);
+    /* Build up the list in sorted order. */
+    for (i = 0; i < count; i++) {
+	SLIST_INSERT_HEAD(&stack->more, paths[i], entries);
+    }
 
     /* Pull out the first element for parsing, leave the rest for later. */
-    if (count) {
-	path = first->path;
-	pl = first->next;
-	efree(first);
-	stack->more = pl;
-    } else {
-	path = NULL;
-    }
+    pl = SLIST_FIRST(&stack->more);
+    SLIST_REMOVE_HEAD(&stack->more, entries);
+    path = pl->path;
+    efree(pl);
 done:
+    efree(paths);
     efree(dirpath);
     debug_return_str(path);
 bad:
-    while (first != NULL) {
-	pl = first;
-	first = pl->next;
-	free(pl->path);
-	free(pl);
+    for (i = 0; i < count; i++) {
+	efree(paths[i]->path);
+	efree(paths[i]);
     }
-    efree(sorted);
+    efree(paths);
     efree(dirpath);
     efree(path);
     debug_return_str(NULL);
@@ -784,15 +857,15 @@ init_lexer(void)
 
     while (idepth) {
 	idepth--;
-	while ((pl = istack[idepth].more) != NULL) {
-	    istack[idepth].more = pl->next;
+	while ((pl = SLIST_FIRST(&istack[idepth].more)) != NULL) {
+	    SLIST_REMOVE_HEAD(&istack[idepth].more, entries);
 	    efree(pl->path);
 	    efree(pl);
 	}
 	efree(istack[idepth].path);
 	if (idepth && !istack[idepth].keepopen)
 	    fclose(istack[idepth].bs->yy_input_file);
-	yy_delete_buffer(istack[idepth].bs);
+	sudoers_delete_buffer(istack[idepth].bs);
     }
     efree(istack);
     istack = NULL;
@@ -815,18 +888,23 @@ _push_include(char *path, bool isdir)
 
     /* push current state onto stack */
     if (idepth >= istacksize) {
+	struct include_stack *new_istack;
+
 	if (idepth > MAX_SUDOERS_DEPTH) {
-	    yyerror(_("too many levels of includes"));
+	    sudoerserror(N_("too many levels of includes"));
 	    debug_return_bool(false);
 	}
 	istacksize += SUDOERS_STACK_INCREMENT;
-	istack = (struct include_stack *) realloc(istack,
+	new_istack = (struct include_stack *) realloc(istack,
 	    sizeof(*istack) * istacksize);
-	if (istack == NULL) {
-	    yyerror(_("unable to allocate memory"));
+	if (new_istack == NULL) {
+	    warning(NULL);
+	    sudoerserror(NULL);
 	    debug_return_bool(false);
 	}
+	istack = new_istack;
     }
+    SLIST_INIT(&istack[idepth].more);
     if (isdir) {
 	struct stat sb;
 	switch (sudo_secure_dir(path, sudoers_uid, sudoers_gid, &sb)) {
@@ -842,19 +920,19 @@ _push_include(char *path, bool isdir)
 		debug_return_bool(false);
 	    case SUDO_PATH_WRONG_OWNER:
 		if (sudoers_warnings) {
-		    warningx(_("%s is owned by uid %u, should be %u"),   
+		    warningx(U_("%s is owned by uid %u, should be %u"),   
 			path, (unsigned int) sb.st_uid,
 			(unsigned int) sudoers_uid);
 		}
 		debug_return_bool(false);
 	    case SUDO_PATH_WORLD_WRITABLE:
 		if (sudoers_warnings) {
-		    warningx(_("%s is world writable"), path);
+		    warningx(U_("%s is world writable"), path);
 		}
 		debug_return_bool(false);
 	    case SUDO_PATH_GROUP_WRITABLE:
 		if (sudoers_warnings) {
-		    warningx(_("%s is owned by gid %u, should be %u"),
+		    warningx(U_("%s is owned by gid %u, should be %u"),
 			path, (unsigned int) sb.st_gid,
 			(unsigned int) sudoers_gid);
 		}
@@ -864,25 +942,24 @@ _push_include(char *path, bool isdir)
 		debug_return_bool(false);
 	}
 	if (!(path = switch_dir(&istack[idepth], path))) {
-	    /* switch_dir() called yyerror() for us */
+	    /* switch_dir() called sudoerserror() for us */
 	    debug_return_bool(false);
 	}
 	while ((fp = open_sudoers(path, false, &keepopen)) == NULL) {
 	    /* Unable to open path in includedir, go to next one, if any. */
 	    efree(path);
-	    if ((pl = istack[idepth].more) == NULL)
+	    if ((pl = SLIST_FIRST(&istack[idepth].more)) == NULL)
 		debug_return_bool(false);
+	    SLIST_REMOVE_HEAD(&istack[idepth].more, entries);
 	    path = pl->path;
-	    istack[idepth].more = pl->next;
 	    efree(pl);
 	}
     } else {
 	if ((fp = open_sudoers(path, true, &keepopen)) == NULL) {
 	    /* The error was already printed by open_sudoers() */
-	    yyerror(NULL);
+	    sudoerserror(NULL);
 	    debug_return_bool(false);
 	}
-	istack[idepth].more = NULL;
     }
     /* Push the old (current) file and open the new one. */
     istack[idepth].path = sudoers; /* push old path */
@@ -892,7 +969,7 @@ _push_include(char *path, bool isdir)
     idepth++;
     sudolineno = 1;
     sudoers = path;
-    yy_switch_to_buffer(yy_create_buffer(fp, YY_BUF_SIZE));
+    sudoers_switch_to_buffer(sudoers_create_buffer(fp, YY_BUF_SIZE));
 
     debug_return_bool(true);
 }
@@ -909,28 +986,27 @@ pop_include(void)
 
     if (!keepopen)
 	fclose(YY_CURRENT_BUFFER->yy_input_file);
-    yy_delete_buffer(YY_CURRENT_BUFFER);
+    sudoers_delete_buffer(YY_CURRENT_BUFFER);
     /* If we are in an include dir, move to the next file. */
-    while ((pl = istack[idepth - 1].more) != NULL) {
+    while ((pl = SLIST_FIRST(&istack[idepth - 1].more)) != NULL) {
+	SLIST_REMOVE_HEAD(&istack[idepth - 1].more, entries);
 	fp = open_sudoers(pl->path, false, &keepopen);
 	if (fp != NULL) {
-	    istack[idepth - 1].more = pl->next;
 	    efree(sudoers);
 	    sudoers = pl->path;
 	    sudolineno = 1;
-	    yy_switch_to_buffer(yy_create_buffer(fp, YY_BUF_SIZE));
+	    sudoers_switch_to_buffer(sudoers_create_buffer(fp, YY_BUF_SIZE));
 	    efree(pl);
 	    break;
 	}
 	/* Unable to open path in include dir, go to next one. */
-	istack[idepth - 1].more = pl->next;
 	efree(pl->path);
 	efree(pl);
     }
     /* If no path list, just pop the last dir on the stack. */
     if (pl == NULL) {
 	idepth--;
-	yy_switch_to_buffer(istack[idepth].bs);
+	sudoers_switch_to_buffer(istack[idepth].bs);
 	efree(sudoers);
 	sudoers = istack[idepth].path;
 	sudolineno = istack[idepth].lineno;
@@ -974,7 +1050,8 @@ parse_include(char *base)
     len += (int)(ep - cp);
     path = pp = malloc(len + dirlen + 1);
     if (path == NULL) {
-	yyerror(_("unable to allocate memory"));
+	warning(NULL);
+	sudoerserror(NULL);
 	debug_return_str(NULL);
     }
     if (dirlen) {

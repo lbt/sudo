@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2011-2013 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -17,7 +17,6 @@
 #include <config.h>
 
 #include <sys/types.h>
-#include <sys/param.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
 #include <stdio.h>
@@ -48,12 +47,15 @@
 #include <fcntl.h>
 #include <time.h>
 
+#define DEFAULT_TEXT_DOMAIN	"sudo"
+#include "gettext.h"		/* must be included before missing.h */
+
 #include "missing.h"
 #include "alloc.h"
-#include "error.h"
-#include "gettext.h"
+#include "fatal.h"
 #include "sudo_plugin.h"
 #include "sudo_debug.h"
+#include "sudo_util.h"
 
 /*
  * The debug priorities and subsystems are currently hard-coded.
@@ -102,6 +104,7 @@ const char *const sudo_debug_subsystems[] = {
     "plugin",
     "hooks",
     "sssd",
+    "event",
     NULL
 };
 
@@ -117,8 +120,7 @@ static int sudo_debug_fd = -1;
 static int sudo_debug_mode;
 static char sudo_debug_pidstr[(((sizeof(int) * 8) + 2) / 3) + 3];
 static size_t sudo_debug_pidlen;
-
-extern sudo_conv_t sudo_conv;
+static const int num_subsystems = NUM_SUBSYSTEMS;
 
 /*
  * Parse settings string from sudo.conf and open debugfile.
@@ -130,18 +132,29 @@ int sudo_debug_init(const char *debugfile, const char *settings)
     char *buf, *cp, *subsys, *pri;
     int i, j;
 
+    /* Make sure we are not already initialized. */
+    if (sudo_debug_mode != SUDO_DEBUG_MODE_DISABLED)
+	return 1;
+
     /* Init per-subsystems settings to -1 since 0 is a valid priority. */
-    for (i = 0; i < NUM_SUBSYSTEMS; i++)
+    for (i = 0; i < num_subsystems; i++)
 	sudo_debug_settings[i] = -1;
 
     /* Open debug file if specified. */
     if (debugfile != NULL) {
 	if (sudo_debug_fd != -1)
 	    close(sudo_debug_fd);
-	sudo_debug_fd = open(debugfile, O_WRONLY|O_APPEND|O_CREAT,
-	    S_IRUSR|S_IWUSR);
-	if (sudo_debug_fd == -1)
-	    return 0;
+	sudo_debug_fd = open(debugfile, O_WRONLY|O_APPEND, S_IRUSR|S_IWUSR);
+	if (sudo_debug_fd == -1) {
+	    /* Create debug file as needed and set group ownership. */
+	    if (errno == ENOENT) {
+		sudo_debug_fd = open(debugfile, O_WRONLY|O_APPEND|O_CREAT,
+		    S_IRUSR|S_IWUSR);
+	    }
+	    if (sudo_debug_fd == -1)
+		return 0;
+	    ignore_result(fchown(sudo_debug_fd, (uid_t)-1, 0));
+	}
 	(void)fcntl(sudo_debug_fd, F_SETFD, FD_CLOEXEC);
 	sudo_debug_mode = SUDO_DEBUG_MODE_FILE;
     } else {
@@ -149,8 +162,14 @@ int sudo_debug_init(const char *debugfile, const char *settings)
 	sudo_debug_mode = SUDO_DEBUG_MODE_CONV;
     }
 
+    /* Stash the pid string so we only have to format it once. */
+    (void)snprintf(sudo_debug_pidstr, sizeof(sudo_debug_pidstr), "[%d] ",
+	(int)getpid());
+    sudo_debug_pidlen = strlen(sudo_debug_pidstr);
+
     /* Parse settings string. */
-    buf = estrdup(settings);
+    if ((buf = strdup(settings)) == NULL)
+	return 0;
     for ((cp = strtok(buf, ",")); cp != NULL; (cp = strtok(NULL, ","))) {
 	/* Should be in the form subsys@pri. */
 	subsys = cp;
@@ -175,11 +194,7 @@ int sudo_debug_init(const char *debugfile, const char *settings)
 	    }
 	}
     }
-    efree(buf);
-
-    (void)snprintf(sudo_debug_pidstr, sizeof(sudo_debug_pidstr), "[%d] ",
-	(int)getpid());
-    sudo_debug_pidlen = strlen(sudo_debug_pidstr);
+    free(buf);
 
     return 1;
 }
@@ -206,28 +221,32 @@ sudo_debug_enter(const char *func, const char *file, int line,
 	"-> %s @ %s:%d", func, file, line);
 }
 
-void sudo_debug_exit(const char *func, const char *file, int line,
+void
+sudo_debug_exit(const char *func, const char *file, int line,
     int subsys)
 {
     sudo_debug_printf2(NULL, NULL, 0, subsys | SUDO_DEBUG_TRACE,
 	"<- %s @ %s:%d", func, file, line);
 }
 
-void sudo_debug_exit_int(const char *func, const char *file, int line,
+void
+sudo_debug_exit_int(const char *func, const char *file, int line,
     int subsys, int rval)
 {
     sudo_debug_printf2(NULL, NULL, 0, subsys | SUDO_DEBUG_TRACE,
 	"<- %s @ %s:%d := %d", func, file, line, rval);
 }
 
-void sudo_debug_exit_long(const char *func, const char *file, int line,
+void
+sudo_debug_exit_long(const char *func, const char *file, int line,
     int subsys, long rval)
 {
     sudo_debug_printf2(NULL, NULL, 0, subsys | SUDO_DEBUG_TRACE,
 	"<- %s @ %s:%d := %ld", func, file, line, rval);
 }
 
-void sudo_debug_exit_size_t(const char *func, const char *file, int line,
+void
+sudo_debug_exit_size_t(const char *func, const char *file, int line,
     int subsys, size_t rval)
 {
     /* XXX - should use %zu but our snprintf.c doesn't support it */
@@ -236,7 +255,8 @@ void sudo_debug_exit_size_t(const char *func, const char *file, int line,
 }
 
 /* We use int, not bool, here for functions that return -1 on error. */
-void sudo_debug_exit_bool(const char *func, const char *file, int line,
+void
+sudo_debug_exit_bool(const char *func, const char *file, int line,
     int subsys, int rval)
 {
     if (rval == true || rval == false) {
@@ -248,14 +268,16 @@ void sudo_debug_exit_bool(const char *func, const char *file, int line,
     }
 }
 
-void sudo_debug_exit_str(const char *func, const char *file, int line,
+void
+sudo_debug_exit_str(const char *func, const char *file, int line,
     int subsys, const char *rval)
 {
     sudo_debug_printf2(NULL, NULL, 0, subsys | SUDO_DEBUG_TRACE,
 	"<- %s @ %s:%d := %s", func, file, line, rval ? rval : "(null)");
 }
 
-void sudo_debug_exit_str_masked(const char *func, const char *file, int line,
+void
+sudo_debug_exit_str_masked(const char *func, const char *file, int line,
     int subsys, const char *rval)
 {
     static const char stars[] = "********************************************************************************";
@@ -265,7 +287,8 @@ void sudo_debug_exit_str_masked(const char *func, const char *file, int line,
 	"<- %s @ %s:%d := %.*s", func, file, line, len, rval ? stars : "(null)");
 }
 
-void sudo_debug_exit_ptr(const char *func, const char *file, int line,
+void
+sudo_debug_exit_ptr(const char *func, const char *file, int line,
     int subsys, const void *rval)
 {
     sudo_debug_printf2(NULL, NULL, 0, subsys | SUDO_DEBUG_TRACE,
@@ -276,36 +299,35 @@ static void
 sudo_debug_write_conv(const char *func, const char *file, int lineno,
     const char *str, int len, int errno_val)
 {
-    struct sudo_conv_message msg;
-    struct sudo_conv_reply repl;
-    char *buf = NULL;
+    /* Remove trailing newlines. */
+    while (len > 0 && str[len - 1] == '\n')
+	len--;
 
-    /* Call conversation function */
-    if (sudo_conv != NULL) {
-	/* Remove the newline at the end if appending extra info. */
-	if (str[len - 1] == '\n')
-	    len--;
-
-	if (func != NULL && file != NULL && lineno != 0) {
+    if (len > 0) {
+	if (func != NULL && file != NULL) {
 	    if (errno_val) {
-		easprintf(&buf, "%.*s: %s @ %s() %s:%d", len, str,
-		    strerror(errno_val), func, file, lineno);
+		sudo_printf(SUDO_CONV_DEBUG_MSG, "%.*s: %s @ %s() %s:%d",
+		    len, str, strerror(errno_val), func, file, lineno);
 	    } else {
-		easprintf(&buf, "%.*s @ %s() %s:%d", len, str,
-		    func, file, lineno);
+		sudo_printf(SUDO_CONV_DEBUG_MSG, "%.*s @ %s() %s:%d",
+		    len, str, func, file, lineno);
 	    }
-	    str = buf;
-	} else if (errno_val) {
-	    easprintf(&buf, "%.*s: %s", len, str, strerror(errno_val));
-	    str = buf;
+	} else {
+	    if (errno_val) {
+		sudo_printf(SUDO_CONV_DEBUG_MSG, "%.*s: %s",
+		    len, str, strerror(errno_val));
+	    } else {
+		sudo_printf(SUDO_CONV_DEBUG_MSG, "%.*s", len, str);
+	    }
 	}
-	memset(&msg, 0, sizeof(msg));
-	memset(&repl, 0, sizeof(repl));
-	msg.msg_type = SUDO_CONV_DEBUG_MSG;
-	msg.msg = str;
-	sudo_conv(1, &msg, &repl);
-	if (buf != NULL)
-	    efree(buf);
+    } else if (errno_val) {
+	/* Only print error string. */
+	if (func != NULL && file != NULL) {
+	    sudo_printf(SUDO_CONV_DEBUG_MSG, "%s @ %s() %s:%d",
+		strerror(errno_val), func, file, lineno);
+	} else {
+	    sudo_printf(SUDO_CONV_DEBUG_MSG, "%s", strerror(errno_val));
+	}
     }
 }
 
@@ -316,8 +338,7 @@ sudo_debug_write_file(const char *func, const char *file, int lineno,
     char *timestr, numbuf[(((sizeof(int) * 8) + 2) / 3) + 2];
     time_t now;
     struct iovec iov[12];
-    int iovcnt = 4;
-    bool need_newline = false;
+    int iovcnt = 3;
 
     /* Prepend program name and pid with a trailing space. */
     iov[1].iov_base = (char *)getprogname();
@@ -325,26 +346,25 @@ sudo_debug_write_file(const char *func, const char *file, int lineno,
     iov[2].iov_base = sudo_debug_pidstr;
     iov[2].iov_len = sudo_debug_pidlen;
 
-    /* Add string along with newline if it doesn't have one. */
-    iov[3].iov_base = (char *)str;
-    iov[3].iov_len = len;
-    if (str[len - 1] != '\n')
-	need_newline = true;
+    /* Add string, trimming any trailing newlines. */
+    while (len > 0 && str[len - 1] == '\n')
+	len--;
+    if (len > 0) {
+	iov[iovcnt].iov_base = (char *)str;
+	iov[iovcnt].iov_len = len;
+	iovcnt++;
+    }
 
     /* Append error string if errno is specified. */
     if (errno_val) {
-	iov[iovcnt].iov_base = ": ";
-	iov[iovcnt].iov_len = 2;
-	iovcnt++;
+	if (len > 0) {
+	    iov[iovcnt].iov_base = ": ";
+	    iov[iovcnt].iov_len = 2;
+	    iovcnt++;
+	}
 	iov[iovcnt].iov_base = strerror(errno_val);
 	iov[iovcnt].iov_len = strlen(iov[iovcnt].iov_base);
 	iovcnt++;
-
-	/* Move newline to the end. */
-	if (!need_newline) {
-	    need_newline = true;
-	    iov[3].iov_len--;
-	}
     }
 
     /* If function, file and lineno are specified, append them. */
@@ -369,24 +389,15 @@ sudo_debug_write_file(const char *func, const char *file, int lineno,
 	iov[iovcnt].iov_base = numbuf;
 	iov[iovcnt].iov_len = strlen(numbuf);
 	iovcnt++;
-
-	/* Move newline to the end. */
-	if (!need_newline) {
-	    need_newline = true;
-	    iov[3].iov_len--;
-	}
     }
 
-    /* Append newline as needed. */
-    if (need_newline) {
-	/* force newline */
-	iov[iovcnt].iov_base = "\n";
-	iov[iovcnt].iov_len = 1;
-	iovcnt++;
-    }
+    /* Append newline. */
+    iov[iovcnt].iov_base = "\n";
+    iov[iovcnt].iov_len = 1;
+    iovcnt++;
 
     /* Do timestamp last due to ctime's static buffer. */
-    now = time(NULL);
+    time(&now);
     timestr = ctime(&now) + 4;
     timestr[15] = ' ';	/* replace year with a space */
     timestr[16] = '\0';
@@ -401,9 +412,6 @@ void
 sudo_debug_write2(const char *func, const char *file, int lineno,
     const char *str, int len, int errno_val)
 {
-    if (len <= 0)
-	return;
-
     switch (sudo_debug_mode) {
     case SUDO_DEBUG_MODE_CONV:
 	sudo_debug_write_conv(func, file, lineno, str, len, errno_val);
@@ -422,12 +430,11 @@ sudo_debug_write(const char *str, int len, int errno_val)
 }
 
 void
-sudo_debug_printf2(const char *func, const char *file, int lineno, int level,
-    const char *fmt, ...)
+sudo_debug_vprintf2(const char *func, const char *file, int lineno, int level,
+    const char *fmt, va_list ap)
 {
     int buflen, pri, subsys, saved_errno = errno;
-    va_list ap;
-    char *buf;
+    char *buf = NULL;
 
     if (!sudo_debug_mode)
 	return;
@@ -437,10 +444,8 @@ sudo_debug_printf2(const char *func, const char *file, int lineno, int level,
     subsys = SUDO_DEBUG_SUBSYS(level);
 
     /* Make sure we want debug info at this level. */
-    if (subsys < NUM_SUBSYSTEMS && sudo_debug_settings[subsys] >= pri) {
-	va_start(ap, fmt);
-	buflen = vasprintf(&buf, fmt, ap);
-	va_end(ap);
+    if (subsys < num_subsystems && sudo_debug_settings[subsys] >= pri) {
+	buflen = fmt ? vasprintf(&buf, fmt, ap) : 0;
 	if (buflen != -1) {
 	    int errcode = ISSET(level, SUDO_DEBUG_ERRNO) ? saved_errno : 0;
 	    if (ISSET(level, SUDO_DEBUG_LINENO))
@@ -452,6 +457,29 @@ sudo_debug_printf2(const char *func, const char *file, int lineno, int level,
     }
 
     errno = saved_errno;
+}
+
+#ifdef NO_VARIADIC_MACROS
+void
+sudo_debug_printf_nvm(int pri, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    sudo_debug_vprintf2(NULL, NULL, 0, pri, fmt, ap);
+    va_end(ap);
+}
+#endif /* NO_VARIADIC_MACROS */
+
+void
+sudo_debug_printf2(const char *func, const char *file, int lineno, int level,
+    const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    sudo_debug_vprintf2(func, file, lineno, level, fmt, ap);
+    va_end(ap);
 }
 
 void
@@ -470,7 +498,7 @@ sudo_debug_execve2(int level, const char *path, char *const argv[], char *const 
     subsys = SUDO_DEBUG_SUBSYS(level);
 
     /* Make sure we want debug info at this level. */
-    if (subsys >= NUM_SUBSYSTEMS || sudo_debug_settings[subsys] < pri)
+    if (subsys >= num_subsystems || sudo_debug_settings[subsys] < pri)
 	return;
 
     /* Log envp for debug level "debug". */
@@ -536,8 +564,16 @@ sudo_debug_execve2(int level, const char *path, char *const argv[], char *const 
 }
 
 /*
- * Dup sudo_debug_fd to the specified value so we don't
- * close it when calling closefrom().
+ * Getter for the debug descriptor.
+ */
+int
+sudo_debug_fd_get(void)
+{
+    return sudo_debug_fd;
+}
+
+/*
+ * Setter for the debug descriptor.
  */
 int
 sudo_debug_fd_set(int fd)

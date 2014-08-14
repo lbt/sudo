@@ -152,7 +152,7 @@ struct sudo_defs_types sudo_defs_table[] = {
 	NULL,
     }, {
 	"loglinelen", T_UINT|T_BOOL,
-	N_("Length at which to wrap log file lines (0 for no wrap): %d"),
+	N_("Length at which to wrap log file lines (0 for no wrap): %u"),
 	NULL,
     }, {
 	"timestamp_timeout", T_FLOAT|T_BOOL,
@@ -164,7 +164,7 @@ struct sudo_defs_types sudo_defs_table[] = {
 	NULL,
     }, {
 	"passwd_tries", T_UINT,
-	N_("Number of tries to enter a password: %d"),
+	N_("Number of tries to enter a password: %u"),
 	NULL,
     }, {
 	"umask", T_MODE|T_BOOL,
@@ -197,6 +197,10 @@ struct sudo_defs_types sudo_defs_table[] = {
     }, {
 	"badpass_message", T_STR,
 	N_("Incorrect password message: %s"),
+	NULL,
+    }, {
+	"lecture_status_dir", T_STR|T_PATH,
+	N_("Path to lecture status dir: %s"),
 	NULL,
     }, {
 	"timestampdir", T_STR|T_PATH,
@@ -349,6 +353,34 @@ struct sudo_defs_types sudo_defs_table[] = {
     }, {
 	"limitprivs", T_STR,
 	N_("Set of limit privileges"),
+	NULL,
+    }, {
+	"exec_background", T_FLAG,
+	N_("Run commands on a pty in the background"),
+	NULL,
+    }, {
+	"pam_service", T_STR,
+	N_("PAM service name to use"),
+	NULL,
+    }, {
+	"pam_login_service", T_STR,
+	N_("PAM service name to use for login shells"),
+	NULL,
+    }, {
+	"pam_setcred", T_FLAG,
+	N_("Attempt to establish PAM credentials for the target user"),
+	NULL,
+    }, {
+	"pam_session", T_FLAG,
+	N_("Create a new PAM session for the command to run in"),
+	NULL,
+    }, {
+	"maxseq", T_UINT,
+	N_("Maximum I/O log sequence number: %u"),
+	NULL,
+    }, {
+	"use_netgroups", T_FLAG,
+	N_("Enable sudoers netgroup support"),
 	NULL,
     }, {
 	NULL, 0, NULL

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2012 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2010-2013 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -81,8 +81,7 @@ struct io_plugin_1_1 {
  * Sudo plugin internals.
  */
 struct plugin_container {
-    struct plugin_container *prev; /* required */
-    struct plugin_container *next; /* required */
+    TAILQ_ENTRY(plugin_container) entries;
     const char *name;
     char * const *options;
     void *handle;
@@ -95,9 +94,9 @@ struct plugin_container {
 	struct io_plugin_1_1 *io_1_1;
     } u;
 };
-TQ_DECLARE(plugin_container)
+TAILQ_HEAD(plugin_container_list, plugin_container);
 
-extern struct plugin_container_list policy_plugins;
+extern struct plugin_container policy_plugin;
 extern struct plugin_container_list io_plugins;
 
 int sudo_conversation(int num_msgs, const struct sudo_conv_message msgs[],

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999-2005, 2007, 2010-2011
+ * Copyright (c) 1999-2005, 2007, 2010-2013
  *	Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -22,7 +22,6 @@
 #include <config.h>
 
 #include <sys/types.h>
-#include <sys/param.h>
 #include <stdio.h>
 #ifdef STDC_HEADERS
 # include <stdlib.h>
@@ -47,13 +46,14 @@
 #ifdef HAVE_INTTYPES_H
 # include <inttypes.h>
 #endif
+#include <limits.h>
+
+#define DEFAULT_TEXT_DOMAIN	"sudo"
+#include "gettext.h"		/* must be included before missing.h */
 
 #include "missing.h"
 #include "alloc.h"
-#include "error.h"
-
-#define DEFAULT_TEXT_DOMAIN	"sudo"
-#include "gettext.h"
+#include "fatal.h"
 
 /*
  * If there is no SIZE_MAX or SIZE_T_MAX we have to assume that size_t
@@ -79,10 +79,10 @@ emalloc(size_t size)
     void *ptr;
 
     if (size == 0)
-	errorx2(1, _("internal error, tried to emalloc(0)"));
+	fatalx_nodebug(_("internal error, tried to emalloc(0)"));
 
     if ((ptr = malloc(size)) == NULL)
-	errorx2(1, _("unable to allocate memory"));
+	fatal_nodebug(NULL);
     return ptr;
 }
 
@@ -96,13 +96,13 @@ emalloc2(size_t nmemb, size_t size)
     void *ptr;
 
     if (nmemb == 0 || size == 0)
-	errorx2(1, _("internal error, tried to emalloc2(0)"));
+	fatalx_nodebug(_("internal error, tried to emalloc2(0)"));
     if (nmemb > SIZE_MAX / size)
-	errorx2(1, _("internal error, %s overflow"), "emalloc2()");
+	fatalx_nodebug(_("internal error, %s overflow"), "emalloc2()");
 
     size *= nmemb;
     if ((ptr = malloc(size)) == NULL)
-	errorx2(1, _("unable to allocate memory"));
+	fatal_nodebug(NULL);
     return ptr;
 }
 
@@ -117,14 +117,14 @@ ecalloc(size_t nmemb, size_t size)
     void *ptr;
 
     if (nmemb == 0 || size == 0)
-	errorx2(1, _("internal error, tried to ecalloc(0)"));
+	fatalx_nodebug(_("internal error, tried to ecalloc(0)"));
     if (nmemb != 1) {
 	if (nmemb > SIZE_MAX / size)
-	    errorx2(1, _("internal error, %s overflow"), "ecalloc()");
+	    fatalx_nodebug(_("internal error, %s overflow"), "ecalloc()");
 	size *= nmemb;
     }
     if ((ptr = malloc(size)) == NULL)
-	errorx2(1, _("unable to allocate memory"));
+	fatal_nodebug(NULL);
     memset(ptr, 0, size);
     return ptr;
 }
@@ -139,11 +139,11 @@ erealloc(void *ptr, size_t size)
 {
 
     if (size == 0)
-	errorx2(1, _("internal error, tried to erealloc(0)"));
+	fatalx_nodebug(_("internal error, tried to erealloc(0)"));
 
     ptr = ptr ? realloc(ptr, size) : malloc(size);
     if (ptr == NULL)
-	errorx2(1, _("unable to allocate memory"));
+	fatal_nodebug(NULL);
     return ptr;
 }
 
@@ -158,22 +158,21 @@ erealloc3(void *ptr, size_t nmemb, size_t size)
 {
 
     if (nmemb == 0 || size == 0)
-	errorx2(1, _("internal error, tried to erealloc3(0)"));
+	fatalx_nodebug(_("internal error, tried to erealloc3(0)"));
     if (nmemb > SIZE_MAX / size)
-	errorx2(1, _("internal error, %s overflow"), "erealloc3()");
+	fatalx_nodebug(_("internal error, %s overflow"), "erealloc3()");
 
     size *= nmemb;
     ptr = ptr ? realloc(ptr, size) : malloc(size);
     if (ptr == NULL)
-	errorx2(1, _("unable to allocate memory"));
+	fatal_nodebug(NULL);
     return ptr;
 }
 
-#ifdef notyet
 /*
  * erecalloc() realloc(3)s nmemb * msize bytes and exits with an error
  * if overflow would occur or if the system malloc(3)/realloc(3) fails.
- * On success, the new space is zero-filled.  You can call ereallocz()
+ * On success, the new space is zero-filled.  You can call erealloc()
  * with a NULL pointer even if the system realloc(3) does not support this.
  */
 void *
@@ -182,21 +181,20 @@ erecalloc(void *ptr, size_t onmemb, size_t nmemb, size_t msize)
     size_t size;
 
     if (nmemb == 0 || msize == 0)
-	errorx2(1, _("internal error, tried to erecalloc(0)"));
+	fatalx_nodebug(_("internal error, tried to erecalloc(0)"));
     if (nmemb > SIZE_MAX / msize)
-	errorx2(1, _("internal error, %s overflow"), "erecalloc()");
+	fatalx_nodebug(_("internal error, %s overflow"), "erecalloc()");
 
     size = nmemb * msize;
     ptr = ptr ? realloc(ptr, size) : malloc(size);
     if (ptr == NULL)
-	errorx2(1, _("unable to allocate memory"));
+	fatal_nodebug(NULL);
     if (nmemb > onmemb) {
 	size = (nmemb - onmemb) * msize;
 	memset((char *)ptr + (onmemb * msize), 0, size);
     }
     return ptr;
 }
-#endif
 
 /*
  * estrdup() is like strdup(3) except that it exits with an error if
@@ -248,12 +246,13 @@ easprintf(char **ret, const char *fmt, ...)
 {
     int len;
     va_list ap;
+
     va_start(ap, fmt);
     len = vasprintf(ret, fmt, ap);
     va_end(ap);
 
     if (len == -1)
-	errorx2(1, _("unable to allocate memory"));
+	fatal_nodebug(NULL);
     return len;
 }
 
@@ -267,16 +266,6 @@ evasprintf(char **ret, const char *format, va_list args)
     int len;
 
     if ((len = vasprintf(ret, format, args)) == -1)
-	errorx2(1, _("unable to allocate memory"));
+	fatal_nodebug(NULL);
     return len;
-}
-
-/*
- * Wrapper for free(3) so we can depend on C89 semantics.
- */
-void
-efree(void *ptr)
-{
-    if (ptr != NULL)
-	free(ptr);
 }

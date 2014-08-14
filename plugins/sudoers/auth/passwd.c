@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999-2005, 2010-2011 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 1999-2005, 2010-2013 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -21,7 +21,6 @@
 #include <config.h>
 
 #include <sys/types.h>
-#include <sys/param.h>
 #include <stdio.h>
 #ifdef STDC_HEADERS
 # include <stdlib.h>
@@ -69,15 +68,15 @@ sudo_passwd_verify(struct passwd *pw, char *pass, sudo_auth *auth)
     char sav, *epass;
     char *pw_epasswd = auth->data;
     size_t pw_len;
-    int error;
+    int matched = 0;
     debug_decl(sudo_passwd_verify, SUDO_DEBUG_AUTH)
 
     pw_len = strlen(pw_epasswd);
 
 #ifdef HAVE_GETAUTHUID
     /* Ultrix shadow passwords may use crypt16() */
-    error = strcmp(pw_epasswd, (char *) crypt16(pass, pw_epasswd));
-    if (!error)
+    epass = (char *) crypt16(pass, pw_epasswd);
+    if (epass != NULL && strcmp(pw_epasswd, epass) == 0)
 	debug_return_int(AUTH_SUCCESS);
 #endif /* HAVE_GETAUTHUID */
 
@@ -96,12 +95,14 @@ sudo_passwd_verify(struct passwd *pw, char *pass, sudo_auth *auth)
      */
     epass = (char *) crypt(pass, pw_epasswd);
     pass[8] = sav;
-    if (HAS_AGEINFO(pw_epasswd, pw_len) && strlen(epass) == DESLEN)
-	error = strncmp(pw_epasswd, epass, DESLEN);
-    else
-	error = strcmp(pw_epasswd, epass);
+    if (epass != NULL) {
+	if (HAS_AGEINFO(pw_epasswd, pw_len) && strlen(epass) == DESLEN)
+	    matched = !strncmp(pw_epasswd, epass, DESLEN);
+	else
+	    matched = !strcmp(pw_epasswd, epass);
+    }
 
-    debug_return_int(error ? AUTH_FAILURE : AUTH_SUCCESS);
+    debug_return_int(matched ? AUTH_SUCCESS : AUTH_FAILURE);
 }
 
 int
@@ -113,7 +114,7 @@ sudo_passwd_cleanup(pw, auth)
     debug_decl(sudo_passwd_cleanup, SUDO_DEBUG_AUTH)
 
     if (pw_epasswd != NULL) {
-	zero_bytes(pw_epasswd, strlen(pw_epasswd));
+	memset_s(pw_epasswd, SUDO_CONV_REPL_MAX, 0, strlen(pw_epasswd));
 	efree(pw_epasswd);
     }
     debug_return_int(AUTH_SUCCESS);

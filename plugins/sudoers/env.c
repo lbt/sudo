@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000-2005, 2007-2011
+ * Copyright (c) 2000-2005, 2007-2013
  *	Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -22,7 +22,6 @@
 #include <config.h>
 
 #include <sys/types.h>
-#include <sys/param.h>
 #include <sys/stat.h>
 #include <stdio.h>
 #ifdef STDC_HEADERS
@@ -286,12 +285,12 @@ sudo_putenv_nodebug(char *str, bool dupcheck, bool overwrite)
 	size_t nsize;
 
 	if (env.env_size > SIZE_MAX - 128) {
-	    errorx2(1, _("internal error, %s overflow"),
+	    fatalx_nodebug(U_("internal error, %s overflow"),
 		"sudo_putenv_nodebug()");
 	}
 	nsize = env.env_size + 128;
 	if (nsize > SIZE_MAX / sizeof(char *)) {
-	    errorx2(1, _("internal error, %s overflow"),
+	    fatalx_nodebug(U_("internal error, %s overflow"),
 		"sudo_putenv_nodebug()");
 	}
 	nenvp = realloc(env.envp, nsize * sizeof(char *));
@@ -365,9 +364,9 @@ sudo_putenv(char *str, bool dupcheck, bool overwrite)
     if (rval == -1) {
 #ifdef ENV_DEBUG
 	if (env.envp[env.env_len] != NULL)
-	    errorx(1, _("sudo_putenv: corrupted envp, length mismatch"));
+	    fatalx(U_("sudo_putenv: corrupted envp, length mismatch"));
 #endif
-	errorx(1, _("unable to allocate memory"));
+	fatal(NULL);
     }
     debug_return_int(rval);
 }
@@ -393,7 +392,7 @@ sudo_setenv2(const char *var, const char *val, bool dupcheck, bool overwrite)
 	strlcat(estring, "=", esize) >= esize ||
 	strlcat(estring, val, esize) >= esize) {
 
-	errorx(1, _("internal error, %s overflow"), "sudo_setenv2()");
+	fatalx(U_("internal error, %s overflow"), "sudo_setenv2()");
     }
     rval = sudo_putenv(estring, dupcheck, overwrite);
     if (rval == -1)
@@ -403,52 +402,60 @@ sudo_setenv2(const char *var, const char *val, bool dupcheck, bool overwrite)
 
 /*
  * Similar to setenv(3) but operates on a private copy of the environment.
+ */
+int
+sudo_setenv(const char *var, const char *val, int overwrite)
+{
+    return sudo_setenv2(var, val, true, (bool)overwrite);
+}
+
+/*
+ * Similar to setenv(3) but operates on a private copy of the environment.
  * Does not include warnings or debugging to avoid recursive calls.
  */
 static int
 sudo_setenv_nodebug(const char *var, const char *val, int overwrite)
 {
-    char *estring;
+    char *ep, *estring = NULL;
+    const char *cp;
     size_t esize;
     int rval = -1;
 
-    esize = strlen(var) + 1 + strlen(val) + 1;
-    if ((estring = malloc(esize)) == NULL) {
-	errno = ENOMEM;
-	goto done;
-    }
-
-    /* Build environment string and insert it. */
-    if (strlcpy(estring, var, esize) >= esize ||
-	strlcat(estring, "=", esize) >= esize ||
-	strlcat(estring, val, esize) >= esize) {
-
+    if (var == NULL || *var == '\0') {
 	errno = EINVAL;
 	goto done;
     }
+
+    /*
+     * POSIX says a var name with '=' is an error but BSD
+     * just ignores the '=' and anything after it.
+     */
+    for (cp = var; *cp && *cp != '='; cp++)
+	;
+    esize = (size_t)(cp - var) + 2;
+    if (val) {
+	esize += strlen(val);	/* glibc treats a NULL val as "" */
+    }
+
+    /* Allocate and fill in estring. */
+    if ((estring = ep = malloc(esize)) == NULL) {
+	errno = ENOMEM;
+	goto done;
+    }
+    for (cp = var; *cp && *cp != '='; cp++)
+	*ep++ = *cp;
+    *ep++ = '=';
+    if (val) {
+	for (cp = val; *cp; cp++)
+	    *ep++ = *cp;
+    }
+    *ep = '\0';
+
     rval = sudo_putenv_nodebug(estring, true, overwrite);
 done:
     if (rval == -1)
-	efree(estring);
+	free(estring);
     return rval;
-}
-
-/*
- * Similar to setenv(3) but operates on a private copy of the environment.
- */
-int
-sudo_setenv(const char *var, const char *val, int overwrite)
-{
-    int rval;
-    debug_decl(sudo_setenv, SUDO_DEBUG_ENV)
-
-    rval = sudo_setenv_nodebug(var, val, overwrite);
-    if (rval == -1) {
-	if (errno == EINVAL)
-	    errorx(1, _("internal error, %s overflow"), "sudo_setenv()");
-	errorx(1, _("unable to allocate memory"));
-    }
-    debug_return_int(rval);
 }
 
 /*
@@ -538,21 +545,6 @@ sudo_getenv(const char *name)
 }
 
 /*
- * Merge another environment with our private copy.
- */
-void
-env_merge(char * const envp[], bool overwrite)
-{
-    char * const *ep;
-    debug_decl(env_merge, SUDO_DEBUG_ENV)
-
-    for (ep = envp; *ep != NULL; ep++)
-	sudo_putenv(*ep, true, overwrite);
-
-    debug_return;
-}
-
-/*
  * Check the env_delete blacklist.
  * Returns true if the variable was found, else false.
  */
@@ -566,7 +558,7 @@ matches_env_delete(const char *var)
     debug_decl(matches_env_delete, SUDO_DEBUG_ENV)
 
     /* Skip anything listed in env_delete. */
-    for (cur = def_env_delete; cur; cur = cur->next) {
+    SLIST_FOREACH(cur, &def_env_delete, entries) {
 	len = strlen(cur->value);
 	/* Deal with '*' wildcard */
 	if (cur->value[len - 1] == '*') {
@@ -597,7 +589,7 @@ matches_env_check(const char *var)
     int keepit = -1;
     debug_decl(matches_env_check, SUDO_DEBUG_ENV)
 
-    for (cur = def_env_check; cur; cur = cur->next) {
+    SLIST_FOREACH(cur, &def_env_check, entries) {
 	len = strlen(cur->value);
 	/* Deal with '*' wildcard */
 	if (cur->value[len - 1] == '*') {
@@ -632,7 +624,7 @@ matches_env_keep(const char *var)
 	goto done;
     }
 
-    for (cur = def_env_keep; cur; cur = cur->next) {
+    SLIST_FOREACH(cur, &def_env_keep, entries) {
 	len = strlen(cur->value);
 	/* Deal with '*' wildcard */
 	if (cur->value[len - 1] == '*') {
@@ -686,6 +678,23 @@ env_should_keep(const char *var)
     sudo_debug_printf(SUDO_DEBUG_INFO, "keep %s: %s",
 	var, keepit ? "YES" : "NO");
     debug_return_bool(keepit == true);
+}
+
+/*
+ * Merge another environment with our private copy.
+ * Only overwrite an existing variable if it is not
+ * being preserved from the user's environment.
+ */
+void
+env_merge(char * const envp[])
+{
+    char * const *ep;
+    debug_decl(env_merge, SUDO_DEBUG_ENV)
+
+    for (ep = envp; *ep != NULL; ep++)
+	sudo_putenv(*ep, true, !env_should_keep(*ep));
+
+    debug_return;
 }
 
 static void
@@ -1002,7 +1011,7 @@ validate_env_vars(char * const env_vars[])
     if (bad != NULL) {
 	bad[blen - 2] = '\0';		/* remove trailing ", " */
 	log_fatal(NO_MAIL,
-	    _("sorry, you are not allowed to set the following environment variables: %s"), bad);
+	    N_("sorry, you are not allowed to set the following environment variables: %s"), bad);
 	/* NOTREACHED */
 	efree(bad);
     }
@@ -1022,15 +1031,15 @@ void
 read_env_file(const char *path, int overwrite)
 {
     FILE *fp;
-    char *cp, *var, *val;
-    size_t var_len, val_len;
+    char *cp, *var, *val, *line = NULL;
+    size_t var_len, val_len, linesize = 0;
 
     if ((fp = fopen(path, "r")) == NULL)
 	return;
 
-    while ((var = sudo_parseln(fp)) != NULL) {
+    while (sudo_parseln(&line, &linesize, NULL, fp) != -1) {
 	/* Skip blank or comment lines */
-	if (*var == '\0')
+	if (*(var = line) == '\0')
 	    continue;
 
 	/* Skip optional "export " */
@@ -1062,6 +1071,7 @@ read_env_file(const char *path, int overwrite)
 
 	sudo_putenv(cp, true, overwrite);
     }
+    free(line);
     fclose(fp);
 }
 
@@ -1075,24 +1085,21 @@ init_envtables(void)
     for (p = initial_badenv_table; *p; p++) {
 	cur = ecalloc(1, sizeof(struct list_member));
 	cur->value = estrdup(*p);
-	cur->next = def_env_delete;
-	def_env_delete = cur;
+	SLIST_INSERT_HEAD(&def_env_delete, cur, entries);
     }
 
     /* Fill in the "env_check" list. */
     for (p = initial_checkenv_table; *p; p++) {
 	cur = ecalloc(1, sizeof(struct list_member));
 	cur->value = estrdup(*p);
-	cur->next = def_env_check;
-	def_env_check = cur;
+	SLIST_INSERT_HEAD(&def_env_check, cur, entries);
     }
 
     /* Fill in the "env_keep" list. */
     for (p = initial_keepenv_table; *p; p++) {
 	cur = ecalloc(1, sizeof(struct list_member));
 	cur->value = estrdup(*p);
-	cur->next = def_env_keep;
-	def_env_keep = cur;
+	SLIST_INSERT_HEAD(&def_env_keep, cur, entries);
     }
 }
 
@@ -1105,7 +1112,21 @@ sudoers_hook_getenv(const char *name, char **value, void *closure)
 	return SUDO_HOOK_RET_NEXT;
 
     in_progress = true;
+
+    /* Hack to make GNU gettext() find the sudoers locale when needed. */
+    if (*name == 'L' && sudoers_getlocale() == SUDOERS_LOCALE_SUDOERS) {
+	if (strcmp(name, "LANGUAGE") == 0 || strcmp(name, "LANG") == 0) {
+	    *value = NULL;
+	    goto done;
+	}
+	if (strcmp(name, "LC_ALL") == 0 || strcmp(name, "LC_MESSAGES") == 0) {
+	    *value = def_sudoers_locale;
+	    goto done;
+	}
+    }
+
     *value = sudo_getenv_nodebug(name);
+done:
     in_progress = false;
     return SUDO_HOOK_RET_STOP;
 }

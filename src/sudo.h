@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1993-1996, 1998-2005, 2007-2012
+ * Copyright (c) 1993-1996, 1998-2005, 2007-2013
  *	Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -17,8 +17,6 @@
  * Sponsored in part by the Defense Advanced Research Projects
  * Agency (DARPA) and Air Force Research Laboratory, Air Force
  * Materiel Command, USAF, under agreement number F39502-99-1-0512.
- *
- * $Sudo: sudo.h,v 1.290 2009/12/12 16:12:26 millert Exp $
  */
 
 #ifndef _SUDO_SUDO_H
@@ -32,23 +30,24 @@
 # include "compat/stdbool.h"
 #endif /* HAVE_STDBOOL_H */
 
+#include "gettext.h"		/* must be included before missing.h */
+
 #include "missing.h"
 #include "alloc.h"
-#include "error.h"
+#include "fatal.h"
 #include "fileops.h"
-#include "list.h"
 #include "sudo_conf.h"
 #include "sudo_debug.h"
-#include "gettext.h"
+#include "sudo_util.h"
 
 #ifdef HAVE_PRIV_SET
 # include <priv.h>
 #endif
 
 #ifdef __TANDEM
-# define ROOT_UID       65535
+# define ROOT_UID	65535
 #else
-# define ROOT_UID       0
+# define ROOT_UID	0
 #endif
 
 /*
@@ -76,14 +75,6 @@
 #define MODE_PRESERVE_ENV	0x00400000
 #define MODE_NONINTERACTIVE	0x00800000
 #define MODE_LONG_LIST		0x01000000
-
-/*
- * We used to use the system definition of PASS_MAX or _PASSWD_LEN,
- * but that caused problems with various alternate authentication
- * methods.  So, we just define our own and assume that it is >= the
- * system max.
- */
-#define SUDO_PASS_MAX	256
 
 /*
  * Flags for tgetpass()
@@ -130,6 +121,15 @@ struct user_details {
 #define CD_RBAC_ENABLED		0x0800
 #define CD_USE_PTY		0x1000
 #define CD_SET_UTMP		0x2000
+#define CD_EXEC_BG		0x4000
+
+struct preserved_fd {
+    TAILQ_ENTRY(preserved_fd) entries;
+    int lowfd;
+    int highfd;
+    int flags;
+};
+TAILQ_HEAD(preserved_fd_list, preserved_fd);
 
 struct command_details {
     uid_t uid;
@@ -142,6 +142,7 @@ struct command_details {
     int ngroups;
     int closefrom;
     int flags;
+    struct preserved_fd_list preserved_fds;
     struct passwd *pw;
     GETGROUPS_T *groups;
     const char *command;
@@ -172,33 +173,16 @@ struct command_status {
 
 struct timeval;
 
-/* For error() and errorx() (XXX - needed?) */
+/* For fatal() and fatalx() (XXX - needed?) */
 void cleanup(int);
 
 /* tgetpass.c */
 char *tgetpass(const char *, int, int);
 int tty_present(void);
 
-/* zero_bytes.c */
-void zero_bytes(volatile void *, size_t);
-
 /* exec.c */
+int pipe_nonblock(int fds[2]);
 int sudo_execute(struct command_details *details, struct command_status *cstat);
-void save_signals(void);
-void restore_signals(void);
-
-/* term.c */
-int term_cbreak(int);
-int term_copy(int, int);
-int term_noecho(int);
-int term_raw(int, int);
-int term_restore(int, int);
-
-/* fmt_string.h */
-char *fmt_string(const char *var, const char *value);
-
-/* atobool.c */
-bool atobool(const char *str);
 
 /* parse_args.c */
 int parse_args(int argc, char **argv, int *nargc, char ***nargv,
@@ -208,14 +192,12 @@ extern int tgetpass_flags;
 /* get_pty.c */
 int get_pty(int *master, int *slave, char *name, size_t namesz, uid_t uid);
 
-/* ttysize.c */
-void get_ttysize(int *rowp, int *colp);
-
 /* sudo.c */
 bool exec_setup(struct command_details *details, const char *ptyname, int ptyfd);
 int policy_init_session(struct command_details *details);
 int run_command(struct command_details *details);
-extern const char *list_user, *runas_user, *runas_group;
+int os_init_common(int argc, char *argv[], char *envp[]);
+extern const char *list_user;
 extern struct user_details user_details;
 
 /* sudo_edit.c */
@@ -224,6 +206,9 @@ int sudo_edit(struct command_details *details);
 /* parse_args.c */
 void usage(int);
 
+/* openbsd.c */
+int os_init_openbsd(int argc, char *argv[], char *envp[]);
+
 /* selinux.c */
 int selinux_restore_tty(void);
 int selinux_setup(const char *role, const char *type, const char *ttyn,
@@ -231,10 +216,9 @@ int selinux_setup(const char *role, const char *type, const char *ttyn,
 void selinux_execve(const char *path, char *const argv[], char *const envp[],
     int noexec);
 
-/* aix.c */
-void aix_prep_user(char *user, const char *tty);
-void aix_restoreauthdb(void);
-void aix_setauthdb(char *user);
+/* solaris.c */
+void set_project(struct passwd *);
+int os_init_solaris(int argc, char *argv[], char *envp[]);
 
 /* hooks.c */
 /* XXX - move to sudo_plugin_int.h? */
@@ -252,10 +236,23 @@ char *getenv_unhooked(const char *name);
 /* interfaces.c */
 int get_net_ifs(char **addrinfo);
 
-/* setgroups.c */
-int sudo_setgroups(int ngids, const GETGROUPS_T *gids);
-
 /* ttyname.c */
 char *get_process_ttyname(void);
+
+/* signal.c */
+struct sigaction;
+extern int signal_pipe[2];
+int sudo_sigaction(int signo, struct sigaction *sa, struct sigaction *osa);
+void init_signals(void);
+void restore_signals(void);
+void save_signals(void);
+
+/* preload.c */
+void preload_static_symbols(void);
+
+/* preserve_fds.c */
+int add_preserved_fd(struct preserved_fd_list *pfds, int fd);
+void closefrom_except(int startfd, struct preserved_fd_list *pfds);
+void parse_preserved_fds(struct preserved_fd_list *pfds, const char *fdstr);
 
 #endif /* _SUDO_SUDO_H */

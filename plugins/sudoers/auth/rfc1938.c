@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1994-1996, 1998-2005, 2010-2011
+ * Copyright (c) 1994-1996, 1998-2005, 2010-2012
  *	Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -22,7 +22,6 @@
 #include <config.h>
 
 #include <sys/types.h>
-#include <sys/param.h>
 #include <stdio.h>
 #ifdef STDC_HEADERS
 # include <stdlib.h>
@@ -101,7 +100,7 @@ sudo_rfc1938_setup(struct passwd *pw, char **promptp, sudo_auth *auth)
      */
     if (rfc1938challenge(&rfc1938, pw->pw_name, challenge, sizeof(challenge))) {
 	if (IS_ONEANDONLY(auth)) {
-	    warningx(_("you do not exist in the %s database"), auth->name);
+	    warningx(U_("you do not exist in the %s database"), auth->name);
 	    debug_return_int(AUTH_FATAL);
 	} else {
 	    debug_return_int(AUTH_FAILURE);

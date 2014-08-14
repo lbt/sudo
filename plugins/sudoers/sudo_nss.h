@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2011 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2007-2011, 2013 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -14,15 +14,14 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef _SUDO_NSS_H
-#define _SUDO_NSS_H
+#ifndef _SUDOERS_NSS_H
+#define _SUDOERS_NSS_H
 
 struct lbuf;
 struct passwd;
 
 struct sudo_nss {
-    struct sudo_nss *prev;
-    struct sudo_nss *next;
+    TAILQ_ENTRY(sudo_nss) entries;
     int (*open)(struct sudo_nss *nss);
     int (*close)(struct sudo_nss *nss);
     int (*parse)(struct sudo_nss *nss);
@@ -37,8 +36,8 @@ struct sudo_nss {
     short ret_if_notfound;
 };
 
-TQ_DECLARE(sudo_nss)
+TAILQ_HEAD(sudo_nss_list, sudo_nss);
 
 struct sudo_nss_list *sudo_read_nss(void);
 
-#endif /* _SUDO_NSS_H */
+#endif /* _SUDOERS_NSS_H */

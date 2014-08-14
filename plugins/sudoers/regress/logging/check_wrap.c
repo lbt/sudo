@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2011-2013 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -35,21 +35,23 @@
 #ifdef HAVE_STRINGS_H
 # include <strings.h>
 #endif /* HAVE_STRINGS_H */
+#include <limits.h>
 
 #define SUDO_ERROR_WRAP 0
 
 #include "missing.h"
-#include "error.h"
+#include "fatal.h"
 #include "sudo_plugin.h"
-
-sudo_conv_t sudo_conv;		/* NULL in non-plugin */
+#include "sudo_util.h"
 
 extern void writeln_wrap(FILE *fp, char *line, size_t len, size_t maxlen);
+
+__dso_public int main(int argc, char *argv[]);
 
 static void
 usage(void)
 {
-    fprintf(stderr, "usage: check_wrap inputfile\n");
+    fprintf(stderr, "usage: %s inputfile\n", getprogname());
     exit(1);
 }
 
@@ -59,18 +61,17 @@ main(int argc, char *argv[])
     size_t len;
     FILE *fp;
     char *cp, *dash, *line, lines[2][2048];
+    int lineno = 0;
     int which = 0;
 
-#if !defined(HAVE_GETPROGNAME) && !defined(HAVE___PROGNAME)
-    setprogname(argc > 0 ? argv[0] : "check_wrap");
-#endif
+    initprogname(argc > 0 ? argv[0] : "check_wrap");
 
     if (argc != 2)
 	usage();
 
     fp = fopen(argv[1], "r");
     if (fp == NULL)
-	errorx(1, "unable to open %s", argv[1]);
+	fatalx("unable to open %s", argv[1]);
 
     /*
      * Each test record consists of a log entry on one line and a list of
@@ -85,13 +86,20 @@ main(int argc, char *argv[])
 
 	/* If we read the 2nd line, parse list of line lengths and check. */
 	if (which) {
+	    lineno++;
 	    for (cp = strtok(lines[1], ","); cp != NULL; cp = strtok(NULL, ",")) {
 		size_t maxlen;
 		/* May be either a number or a range. */
-		len = maxlen = atoi(cp);
 		dash = strchr(cp, '-');
-		if (dash)
-		    maxlen = atoi(dash + 1);
+		if (dash != NULL) {
+		    *dash = '\0';
+		    len = strtonum(cp, 1, INT_MAX, NULL);
+		    maxlen = strtonum(dash + 1, 1, INT_MAX, NULL);
+		} else {
+		    len = maxlen = strtonum(cp, 1, INT_MAX, NULL);
+		}
+		if (len == 0 || maxlen == 0)
+		    fatalx("%s: invalid length on line %d\n", argv[1], lineno);
 		while (len <= maxlen) {
 		    printf("# word wrap at %d characters\n", (int)len);
 		    writeln_wrap(stdout, lines[0], strlen(lines[0]), len);
@@ -103,10 +111,4 @@ main(int argc, char *argv[])
     }
 
     exit(0);
-}
-
-void
-cleanup(int gotsig)
-{
-    return;
 }

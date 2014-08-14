@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998-2005, 2010-2011 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 1998-2005, 2010-2013 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -21,7 +21,6 @@
 #include <config.h>
 
 #include <sys/types.h>
-#include <sys/param.h>
 #include <stdio.h>
 #ifdef STDC_HEADERS
 # include <stdlib.h>
@@ -74,30 +73,28 @@ int
 sudo_secureware_verify(struct passwd *pw, char *pass, sudo_auth *auth)
 {
     char *pw_epasswd = auth->data;
+    char *epass = NULL;
     debug_decl(sudo_secureware_verify, SUDO_DEBUG_AUTH)
 #ifdef __alpha
     {
 	extern int crypt_type;
 
-#  ifdef HAVE_DISPCRYPT
-	if (strcmp(pw_epasswd, dispcrypt(pass, pw_epasswd, crypt_type)) == 0)
-	    debug_return_int(AUTH_SUCCESS);
-#  else
-	if (crypt_type == AUTH_CRYPT_BIGCRYPT) {
-	    if (strcmp(pw_epasswd, bigcrypt(pass, pw_epasswd)) == 0)
-		debug_return_int(AUTH_SUCCESS);
-	} else if (crypt_type == AUTH_CRYPT_CRYPT16) {
-	    if (strcmp(pw_epasswd, crypt(pass, pw_epasswd)) == 0)
-		debug_return_int(AUTH_SUCCESS);
-	}
+# ifdef HAVE_DISPCRYPT
+	epass = dispcrypt(pass, pw_epasswd, crypt_type);
+# else
+	if (crypt_type == AUTH_CRYPT_BIGCRYPT)
+	    epass = bigcrypt(pass, pw_epasswd);
+	else if (crypt_type == AUTH_CRYPT_CRYPT16)
+	    epass = crypt(pass, pw_epasswd);
+# endif /* HAVE_DISPCRYPT */
     }
-#  endif /* HAVE_DISPCRYPT */
 #elif defined(HAVE_BIGCRYPT)
-    if (strcmp(pw_epasswd, bigcrypt(pass, pw_epasswd)) == 0)
-	debug_return_int(AUTH_SUCCESS);
+    epass = bigcrypt(pass, pw_epasswd);
 #endif /* __alpha */
 
-	debug_return_int(AUTH_FAILURE);
+    if (epass != NULL && strcmp(pw_epasswd, epass) == 0)
+	debug_return_int(AUTH_SUCCESS);
+    debug_return_int(AUTH_FAILURE);
 }
 
 int
@@ -109,7 +106,7 @@ sudo_secureware_cleanup(pw, auth)
     debug_decl(sudo_secureware_cleanup, SUDO_DEBUG_AUTH)
 
     if (pw_epasswd != NULL) {
-	zero_bytes(pw_epasswd, strlen(pw_epasswd));
+	memset_s(pw_epasswd, SUDO_CONV_REPL_MAX, 0, strlen(pw_epasswd));
 	efree(pw_epasswd);
     }
     debug_return_int(AUTH_SUCCESS);

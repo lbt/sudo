@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2011-2013 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -17,7 +17,6 @@
 #include <config.h>
 
 #include <sys/types.h>
-#include <sys/param.h>
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <stdio.h>
@@ -41,7 +40,7 @@
 #ifdef HAVE_UNISTD_H
 # include <unistd.h>
 #endif /* HAVE_UNISTD_H */
-#if TIME_WITH_SYS_TIME
+#ifdef TIME_WITH_SYS_TIME
 # include <time.h>
 #endif
 #ifdef HAVE_UTMPX_H
@@ -276,12 +275,12 @@ utmp_slot(const char *line, int ttyfd)
      * doesn't take an argument.
      */
     if ((sfd = dup(STDIN_FILENO)) == -1)
-	error(1, _("unable to save stdin"));
+	fatal(U_("unable to save stdin"));
     if (dup2(ttyfd, STDIN_FILENO) == -1)
-	error(1, _("unable to dup2 stdin"));
+	fatal(U_("unable to dup2 stdin"));
     slot = ttyslot();
     if (dup2(sfd, STDIN_FILENO) == -1)
-	error(1, _("unable to restore stdin"));
+	fatal(U_("unable to restore stdin"));
     close(sfd);
 
     debug_return_int(slot);

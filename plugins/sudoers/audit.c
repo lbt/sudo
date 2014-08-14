@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2010 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2009-2012 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -26,7 +26,15 @@
 #  include <stdlib.h>
 # endif
 #endif /* STDC_HEADERS */
+#ifdef HAVE_STDBOOL_H
+# include <stdbool.h>
+#else
+# include "compat/stdbool.h"
+#endif /* HAVE_STDBOOL_H */
 #include <stdarg.h>
+
+#define DEFAULT_TEXT_DOMAIN	"sudoers"
+#include "gettext.h"		/* must be included before missing.h */
 
 #include "missing.h"
 #include "logging.h"
@@ -60,18 +68,24 @@ void
 audit_failure(char *exec_args[], char const *const fmt, ...)
 {
     va_list ap;
+    int oldlocale;
     debug_decl(audit_success, SUDO_DEBUG_AUDIT)
+
+    /* Audit error messages should be in the sudoers locale. */
+    sudoers_setlocale(SUDOERS_LOCALE_SUDOERS, &oldlocale);
 
     if (exec_args != NULL) {
 	va_start(ap, fmt);
 #ifdef HAVE_BSM_AUDIT
-	bsm_audit_failure(exec_args, fmt, ap);
+	bsm_audit_failure(exec_args, _(fmt), ap);
 #endif
 #ifdef HAVE_LINUX_AUDIT
 	linux_audit_command(exec_args, 0);
 #endif
 	va_end(ap);
     }
+
+    sudoers_setlocale(oldlocale, NULL);
 
     debug_return;
 }

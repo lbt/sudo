@@ -109,7 +109,7 @@ preserve_groups
 	"Don't initialize the group vector to that of the target user"
 loglinelen
 	T_UINT|T_BOOL
-	"Length at which to wrap log file lines (0 for no wrap): %d"
+	"Length at which to wrap log file lines (0 for no wrap): %u"
 timestamp_timeout
 	T_FLOAT|T_BOOL
 	"Authentication timestamp timeout: %.1f minutes"
@@ -118,7 +118,7 @@ passwd_timeout
 	"Password prompt timeout: %.1f minutes"
 passwd_tries
 	T_UINT
-	"Number of tries to enter a password: %d"
+	"Number of tries to enter a password: %u"
 umask
 	T_MODE|T_BOOL
 	"Umask to use or 0777 to use user's: 0%o"
@@ -143,6 +143,9 @@ mailsub
 badpass_message
 	T_STR
 	"Incorrect password message: %s"
+lecture_status_dir
+	T_STR|T_PATH
+	"Path to lecture status dir: %s"
 timestampdir
 	T_STR|T_PATH
 	"Path to authentication timestamp dir: %s"
@@ -259,3 +262,24 @@ privs
 limitprivs
 	T_STR
 	"Set of limit privileges"
+exec_background
+	T_FLAG
+	"Run commands on a pty in the background"
+pam_service
+	T_STR
+	"PAM service name to use"
+pam_login_service
+	T_STR
+	"PAM service name to use for login shells"
+pam_setcred
+	T_FLAG
+	"Attempt to establish PAM credentials for the target user"
+pam_session
+	T_FLAG
+	"Create a new PAM session for the command to run in"
+maxseq
+	T_UINT
+	"Maximum I/O log sequence number: %u"
+use_netgroups
+	T_FLAG
+	"Enable sudoers netgroup support"

@@ -1,14 +1,64 @@
 SUDOERS(4)                    Programmer's Manual                   SUDOERS(4)
 
 NNAAMMEE
-     ssuuddooeerrss - default sudo security policy module
+     ssuuddooeerrss - default sudo security policy plugin
 
 DDEESSCCRRIIPPTTIIOONN
-     The _s_u_d_o_e_r_s policy module determines a user's ssuuddoo privileges.  It is the
+     The _s_u_d_o_e_r_s policy plugin determines a user's ssuuddoo privileges.  It is the
      default ssuuddoo policy plugin.  The policy is driven by the _/_e_t_c_/_s_u_d_o_e_r_s
      file or, optionally in LDAP.  The policy format is described in detail in
      the _S_U_D_O_E_R_S _F_I_L_E _F_O_R_M_A_T section.  For information on storing _s_u_d_o_e_r_s
      policy information in LDAP, please see sudoers.ldap(4).
+
+   CCoonnffiigguurriinngg ssuuddoo..ccoonnff ffoorr ssuuddooeerrss
+     ssuuddoo consults the sudo.conf(4) file to determine which policy and and I/O
+     logging plugins to load.  If no sudo.conf(4) file is present, or if it
+     contains no Plugin lines, ssuuddooeerrss will be used for policy decisions and
+     I/O logging.  To explicitly configure sudo.conf(4) to use the ssuuddooeerrss
+     plugin, the following configuration can be used.
+
+           Plugin sudoers_policy sudoers.so
+           Plugin sudoers_io sudoers.so
+
+     Starting with ssuuddoo 1.8.5, it is possible to specify optional arguments to
+     the ssuuddooeerrss plugin in the sudo.conf(4) file.  These arguments, if
+     present, should be listed after the path to the plugin (i.e. after
+     _s_u_d_o_e_r_s_._s_o).  Multiple arguments may be specified, separated by white
+     space.  For example:
+
+           Plugin sudoers_policy sudoers.so sudoers_mode=0400
+
+     The following plugin arguments are supported:
+
+     ldap_conf=pathname
+               The _l_d_a_p___c_o_n_f argument can be used to override the default path
+               to the _l_d_a_p_._c_o_n_f file.
+
+     ldap_secret=pathname
+               The _l_d_a_p___s_e_c_r_e_t argument can be used to override the default
+               path to the _l_d_a_p_._s_e_c_r_e_t file.
+
+     sudoers_file=pathname
+               The _s_u_d_o_e_r_s___f_i_l_e argument can be used to override the default
+               path to the _s_u_d_o_e_r_s file.
+
+     sudoers_uid=uid
+               The _s_u_d_o_e_r_s___u_i_d argument can be used to override the default
+               owner of the sudoers file.  It should be specified as a numeric
+               user ID.
+
+     sudoers_gid=gid
+               The _s_u_d_o_e_r_s___g_i_d argument can be used to override the default
+               group of the sudoers file.  It must be specified as a numeric
+               group ID (not a group name).
+
+     sudoers_mode=mode
+               The _s_u_d_o_e_r_s___m_o_d_e argument can be used to override the default
+               file mode for the sudoers file.  It should be specified as an
+               octal value.
+
+     For more information on configuring sudo.conf(4), please refer to its
+     manual.
 
    AAuutthheennttiiccaattiioonn aanndd llooggggiinngg
      The _s_u_d_o_e_r_s security policy requires that most users authenticate
@@ -37,13 +87,15 @@ DDEESSCCRRIIPPTTIIOONN
      the _s_u_d_o_e_r_s lookup is still done for root, not the user specified by
      SUDO_USER.
 
-     _s_u_d_o_e_r_s uses time stamp files for credential caching.  Once a user has
-     been authenticated, the time stamp is updated and the user may then use
-     sudo without a password for a short period of time (5 minutes unless
-     overridden by the _t_i_m_e_o_u_t option).  By default, _s_u_d_o_e_r_s uses a tty-based
-     time stamp which means that there is a separate time stamp for each of a
-     user's login sessions.  The _t_t_y___t_i_c_k_e_t_s option can be disabled to force
-     the use of a single time stamp for all of a user's sessions.
+     _s_u_d_o_e_r_s uses per-user time stamp files for credential caching.  Once a
+     user has been authenticated, a record is written containing the uid that
+     was used to authenticate, the terminal session ID, and a time stamp
+     (using a monotonic clock if one is available).  The user may then use
+     ssuuddoo without a password for a short period of time (5 minutes unless
+     overridden by the _t_i_m_e_o_u_t option).  By default, _s_u_d_o_e_r_s uses a separate
+     record for each tty, which means that a user's login sessions are
+     authenticated separately.  The _t_t_y___t_i_c_k_e_t_s option can be disabled to
+     force the use of a single time stamp for all of a user's sessions.
 
      _s_u_d_o_e_r_s can log both successful and unsuccessful attempts (as well as
      errors) to syslog(3), a log file, or both.  By default, _s_u_d_o_e_r_s will log
@@ -186,8 +238,8 @@ SSUUDDOOEERRSS FFIILLEE FFOORRMMAATT
               '!'* %:#nonunix_gid |
               '!'* User_Alias
 
-     A User_List is made up of one or more user names, user ids (prefixed with
-     `#'), system group names and ids (prefixed with `%' and `%#'
+     A User_List is made up of one or more user names, user IDs (prefixed with
+     `#'), system group names and IDs (prefixed with `%' and `%#'
      respectively), netgroups (prefixed with `+'), non-Unix group names and
      IDs (prefixed with `%:' and `%:#' respectively) and User_Aliases. Each
      list item may be prefixed with zero or more `!' operators.  An odd number
@@ -201,14 +253,16 @@ SSUUDDOOEERRSS FFIILLEE FFOORRMMAATT
      characters must be included inside the quotes.
 
      The actual nonunix_group and nonunix_gid syntax depends on the underlying
-     group provider plugin (see the _g_r_o_u_p___p_l_u_g_i_n description below).  For
-     instance, the QAS AD plugin supports the following formats:
+     group provider plugin.  For instance, the QAS AD plugin supports the
+     following formats:
 
      oo     Group in the same domain: "%:Group Name"
 
      oo     Group in any domain: "%:Group Name@FULLY.QUALIFIED.DOMAIN"
 
      oo     Group SID: "%:S-1-2-34-5678901234-5678901234-5678901234-567"
+
+     See _G_R_O_U_P _P_R_O_V_I_D_E_R _P_L_U_G_I_N_S for more information.
 
      Note that quotes around group names are optional.  Unquoted strings must
      use a backslash (`\') to escape spaces and special characters.  See _O_t_h_e_r
@@ -260,6 +314,14 @@ SSUUDDOOEERRSS FFIILLEE FFOORRMMAATT
      ``localhost'' will only match if that is the actual host name, which is
      usually only the case for non-networked systems.
 
+     digest ::= [A-Fa-f0-9]+ |
+                [[A-Za-z0-9+/=]+
+
+     Digest_Spec ::= "sha224" ':' digest |
+                     "sha256" ':' digest |
+                     "sha384" ':' digest |
+                     "sha512" ':' digest
+
      Cmnd_List ::= Cmnd |
                    Cmnd ',' Cmnd_List
 
@@ -267,7 +329,7 @@ SSUUDDOOEERRSS FFIILLEE FFOORRMMAATT
                       file name args |
                       file name '""'
 
-     Cmnd ::= '!'* command name |
+     Cmnd ::= Digest_Spec? '!'* command name |
               '!'* directory |
               '!'* "sudoedit" |
               '!'* Cmnd_Alias
@@ -287,9 +349,33 @@ SSUUDDOOEERRSS FFIILLEE FFOORRMMAATT
      the Cmnd must match exactly those given by the user on the command line
      (or match the wildcards if there are any).  Note that the following
      characters must be escaped with a `\' if they are used in command
-     arguments: `,', `:', `=', `\'.  The special command ``sudoedit'' is used
+     arguments: `,', `:', `=', `\'.  The built-in command ``sudoedit'' is used
      to permit a user to run ssuuddoo with the --ee option (or as ssuuddooeeddiitt).  It may
-     take command line arguments just as a normal command does.
+     take command line arguments just as a normal command does.  Note that
+     ``sudoedit'' is a command built into ssuuddoo itself and must be specified in
+     _s_u_d_o_e_r_s without a leading path.
+
+     If a command name is prefixed with a Digest_Spec, the command will only
+     match successfully if it can be verified using the specified SHA-2
+     digest.  This may be useful in situations where the user invoking ssuuddoo
+     has write access to the command or its parent directory.  The following
+     digest formats are supported: sha224, sha256, sha384 and sha512.  The
+     string may be specified in either hex or base64 format (base64 is more
+     compact).  There are several utilities capable of generating SHA-2
+     digests in hex format such as openssl, shasum, sha224sum, sha256sum,
+     sha384sum, sha512sum.
+
+     For example, using openssl:
+
+     $ openssl dgst -sha224 /bin/ls
+     SHA224(/bin/ls)= 118187da8364d490b4a7debbf483004e8f3e053ec954309de2c41a25
+
+     It is also possible to use openssl to generate base64 output:
+
+     $ openssl dgst -binary -sha224 /bin/ls | openssl base64
+     EYGH2oNk1JC0p9679IMATo8+BT7JVDCd4sQaJQ==
+
+     Command digests are only supported by version 1.8.7 or higher.
 
    DDeeffaauullttss
      Certain configuration options may be changed from their default values at
@@ -469,76 +555,77 @@ SSUUDDOOEERRSS FFIILLEE FFOORRMMAATT
      it is overridden by the opposite tag (in other words, PASSWD overrides
      NOPASSWD and NOEXEC overrides EXEC).
 
-     _N_O_P_A_S_S_W_D _a_n_d _P_A_S_S_W_D
+     _N_O_P_A_S_S_W_D and _P_A_S_S_W_D
 
-     By default, ssuuddoo requires that a user authenticate him or herself before
-     running a command.  This behavior can be modified via the NOPASSWD tag.
-     Like a Runas_Spec, the NOPASSWD tag sets a default for the commands that
-     follow it in the Cmnd_Spec_List.  Conversely, the PASSWD tag can be used
-     to reverse things.  For example:
+       By default, ssuuddoo requires that a user authenticate him or herself
+       before running a command.  This behavior can be modified via the
+       NOPASSWD tag.  Like a Runas_Spec, the NOPASSWD tag sets a default for
+       the commands that follow it in the Cmnd_Spec_List.  Conversely, the
+       PASSWD tag can be used to reverse things.  For example:
 
-     ray     rushmore = NOPASSWD: /bin/kill, /bin/ls, /usr/bin/lprm
+       ray     rushmore = NOPASSWD: /bin/kill, /bin/ls, /usr/bin/lprm
 
-     would allow the user rraayy to run _/_b_i_n_/_k_i_l_l, _/_b_i_n_/_l_s, and _/_u_s_r_/_b_i_n_/_l_p_r_m as
-     rroooott on the machine rushmore without authenticating himself.  If we only
-     want rraayy to be able to run _/_b_i_n_/_k_i_l_l without a password the entry would
-     be:
+       would allow the user rraayy to run _/_b_i_n_/_k_i_l_l, _/_b_i_n_/_l_s, and _/_u_s_r_/_b_i_n_/_l_p_r_m
+       as rroooott on the machine rushmore without authenticating himself.  If we
+       only want rraayy to be able to run _/_b_i_n_/_k_i_l_l without a password the entry
+       would be:
 
-     ray     rushmore = NOPASSWD: /bin/kill, PASSWD: /bin/ls, /usr/bin/lprm
+       ray     rushmore = NOPASSWD: /bin/kill, PASSWD: /bin/ls, /usr/bin/lprm
 
-     Note, however, that the PASSWD tag has no effect on users who are in the
-     group specified by the _e_x_e_m_p_t___g_r_o_u_p option.
+       Note, however, that the PASSWD tag has no effect on users who are in
+       the group specified by the _e_x_e_m_p_t___g_r_o_u_p option.
 
-     By default, if the NOPASSWD tag is applied to any of the entries for a
-     user on the current host, he or she will be able to run ``sudo -l''
-     without a password.  Additionally, a user may only run ``sudo -v''
-     without a password if the NOPASSWD tag is present for all a user's
-     entries that pertain to the current host.  This behavior may be
-     overridden via the _v_e_r_i_f_y_p_w and _l_i_s_t_p_w options.
+       By default, if the NOPASSWD tag is applied to any of the entries for a
+       user on the current host, he or she will be able to run ``sudo -l''
+       without a password.  Additionally, a user may only run ``sudo -v''
+       without a password if the NOPASSWD tag is present for all a user's
+       entries that pertain to the current host.  This behavior may be
+       overridden via the _v_e_r_i_f_y_p_w and _l_i_s_t_p_w options.
 
-     _N_O_E_X_E_C _a_n_d _E_X_E_C
+     _N_O_E_X_E_C and _E_X_E_C
 
-     If ssuuddoo has been compiled with _n_o_e_x_e_c support and the underlying
-     operating system supports it, the NOEXEC tag can be used to prevent a
-     dynamically-linked executable from running further commands itself.
+       If ssuuddoo has been compiled with _n_o_e_x_e_c support and the underlying
+       operating system supports it, the NOEXEC tag can be used to prevent a
+       dynamically-linked executable from running further commands itself.
 
-     In the following example, user aaaarroonn may run _/_u_s_r_/_b_i_n_/_m_o_r_e and
-     _/_u_s_r_/_b_i_n_/_v_i but shell escapes will be disabled.
+       In the following example, user aaaarroonn may run _/_u_s_r_/_b_i_n_/_m_o_r_e and
+       _/_u_s_r_/_b_i_n_/_v_i but shell escapes will be disabled.
 
-     aaron   shanty = NOEXEC: /usr/bin/more, /usr/bin/vi
+       aaron   shanty = NOEXEC: /usr/bin/more, /usr/bin/vi
 
-     See the _P_r_e_v_e_n_t_i_n_g _s_h_e_l_l _e_s_c_a_p_e_s section below for more details on how
-     NOEXEC works and whether or not it will work on your system.
+       See the _P_r_e_v_e_n_t_i_n_g _s_h_e_l_l _e_s_c_a_p_e_s section below for more details on how
+       NOEXEC works and whether or not it will work on your system.
 
-     _S_E_T_E_N_V _a_n_d _N_O_S_E_T_E_N_V
+     _S_E_T_E_N_V and _N_O_S_E_T_E_N_V
 
-     These tags override the value of the _s_e_t_e_n_v option on a per-command
-     basis.  Note that if SETENV has been set for a command, the user may
-     disable the _e_n_v___r_e_s_e_t option from the command line via the --EE option.
-     Additionally, environment variables set on the command line are not
-     subject to the restrictions imposed by _e_n_v___c_h_e_c_k, _e_n_v___d_e_l_e_t_e, or
-     _e_n_v___k_e_e_p.  As such, only trusted users should be allowed to set variables
-     in this manner.  If the command matched is AALLLL, the SETENV tag is implied
-     for that command; this default may be overridden by use of the NOSETENV
-     tag.
+       These tags override the value of the _s_e_t_e_n_v option on a per-command
+       basis.  Note that if SETENV has been set for a command, the user may
+       disable the _e_n_v___r_e_s_e_t option from the command line via the --EE option.
+       Additionally, environment variables set on the command line are not
+       subject to the restrictions imposed by _e_n_v___c_h_e_c_k, _e_n_v___d_e_l_e_t_e, or
+       _e_n_v___k_e_e_p.  As such, only trusted users should be allowed to set
+       variables in this manner.  If the command matched is AALLLL, the SETENV
+       tag is implied for that command; this default may be overridden by use
+       of the NOSETENV tag.
 
-     _L_O_G___I_N_P_U_T _a_n_d _N_O_L_O_G___I_N_P_U_T
+     _L_O_G___I_N_P_U_T and _N_O_L_O_G___I_N_P_U_T
 
-     These tags override the value of the _l_o_g___i_n_p_u_t option on a per-command
-     basis.  For more information, see the description of _l_o_g___i_n_p_u_t in the
-     _S_U_D_O_E_R_S _O_P_T_I_O_N_S section below.
+       These tags override the value of the _l_o_g___i_n_p_u_t option on a per-command
+       basis.  For more information, see the description of _l_o_g___i_n_p_u_t in the
+       _S_U_D_O_E_R_S _O_P_T_I_O_N_S section below.
 
-     _L_O_G___O_U_T_P_U_T _a_n_d _N_O_L_O_G___O_U_T_P_U_T
+     _L_O_G___O_U_T_P_U_T and _N_O_L_O_G___O_U_T_P_U_T
 
-     These tags override the value of the _l_o_g___o_u_t_p_u_t option on a per-command
-     basis.  For more information, see the description of _l_o_g___o_u_t_p_u_t in the
-     _S_U_D_O_E_R_S _O_P_T_I_O_N_S section below.
+       These tags override the value of the _l_o_g___o_u_t_p_u_t option on a per-command
+       basis.  For more information, see the description of _l_o_g___o_u_t_p_u_t in the
+       _S_U_D_O_E_R_S _O_P_T_I_O_N_S section below.
 
    WWiillddccaarrddss
      ssuuddoo allows shell-style _w_i_l_d_c_a_r_d_s (aka meta or glob characters) to be
      used in host names, path names and command line arguments in the _s_u_d_o_e_r_s
-     file.  Wildcard matching is done via the PPOOSSIIXX glob(3) and fnmatch(3)
-     routines.  Note that these are _n_o_t regular expressions.
+     file.  Wildcard matching is done via the glob(3) and fnmatch(3) functions
+     as specified by IEEE Std 1003.1 (``POSIX.1'').  Note that these are _n_o_t
+     regular expressions.
 
      *         Matches any set of zero or more characters.
 
@@ -551,7 +638,7 @@ SSUUDDOOEERRSS FFIILLEE FFOORRMMAATT
      \x        For any character `x', evaluates to `x'.  This is used to
                escape special characters such as: `*', `?', `[', and `]'.
 
-     POSIX character classes may also be used if your system's glob(3) and
+     Character classes may also be used if your system's glob(3) and
      fnmatch(3) functions support them.  However, because the `:' character
      has special meaning in _s_u_d_o_e_r_s, it must be escaped.  For example:
 
@@ -668,11 +755,24 @@ SSUUDDOOEERRSS FFIILLEE FFOORRMMAATT
      since in a command context, it allows the user to run aannyy command on the
      system.
 
-     An exclamation point (`!') can be used as a logical _n_o_t operator both in
-     an _a_l_i_a_s and in front of a Cmnd.  This allows one to exclude certain
-     values.  Note, however, that using a `!' in conjunction with the built-in
-     AALLLL alias to allow a user to run ``all but a few'' commands rarely works
-     as intended (see _S_E_C_U_R_I_T_Y _N_O_T_E_S below).
+     An exclamation point (`!') can be used as a logical _n_o_t operator in a
+     list or _a_l_i_a_s as well as in front of a Cmnd.  This allows one to exclude
+     certain values.  For the `!' operator to be effective, there must be
+     something for it to exclude.  For example, to match all users except for
+     root one would use:
+
+         ALL,!root
+
+     If the AALLLL, is omitted, as in:
+
+         !root
+
+     it would explicitly deny root but not match any other users.  This is
+     different from a true ``negation'' operator.
+
+     Note, however, that using a `!' in conjunction with the built-in AALLLL
+     alias to allow a user to run ``all but a few'' commands rarely works as
+     intended (see _S_E_C_U_R_I_T_Y _N_O_T_E_S below).
 
      Long lines can be continued with a backslash (`\') as the last character
      on the line.
@@ -695,11 +795,10 @@ SSUUDDOOEERRSS OOPPTTIIOONNSS
                        to the home directory of the target user (which is root
                        unless the --uu option is used).  This effectively means
                        that the --HH option is always implied.  Note that HOME
-                       is already set when the the _e_n_v___r_e_s_e_t option is
-                       enabled, so _a_l_w_a_y_s___s_e_t___h_o_m_e is only effective for
-                       configurations where either _e_n_v___r_e_s_e_t is disabled or
-                       HOME is present in the _e_n_v___k_e_e_p list.  This flag is _o_f_f
-                       by default.
+                       is already set when the _e_n_v___r_e_s_e_t option is enabled, so
+                       _a_l_w_a_y_s___s_e_t___h_o_m_e is only effective for configurations
+                       where either _e_n_v___r_e_s_e_t is disabled or HOME is present
+                       in the _e_n_v___k_e_e_p list.  This flag is _o_f_f by default.
 
      authenticate      If set, users must authenticate themselves via a
                        password (or other means of authentication) before they
@@ -717,6 +816,52 @@ SSUUDDOOEERRSS OOPPTTIIOONNSS
                        or output, the I/O logs will be compressed using zzlliibb.
                        This flag is _o_n by default when ssuuddoo is compiled with
                        zzlliibb support.
+
+     use_netgroups     If set, netgroups (prefixed with `+'), may be used in
+                       place of a user or host.  For LDAP-based sudoers,
+                       netgroup support requires an expensive substring match
+                       on the server.  If netgroups are not needed, this
+                       option can be disabled to reduce the load on the LDAP
+                       server.  This flag is _o_n by default.
+
+     exec_background   By default, ssuuddoo runs a command as the foreground
+                       process as long as ssuuddoo itself is running in the
+                       foreground.  When the _e_x_e_c___b_a_c_k_g_r_o_u_n_d flag is enabled
+                       and the command is being run in a pty (due to I/O
+                       logging or the _u_s_e___p_t_y flag), the command will be run
+                       as a background process.  Attempts to read from the
+                       controlling terminal (or to change terminal settings)
+                       will result in the command being suspended with the
+                       SIGTTIN signal (or SIGTTOU in the case of terminal
+                       settings).  If this happens when ssuuddoo is a foreground
+                       process, the command will be granted the controlling
+                       terminal and resumed in the foreground with no user
+                       intervention required.  The advantage of initially
+                       running the command in the background is that ssuuddoo need
+                       not read from the terminal unless the command
+                       explicitly requests it.  Otherwise, any terminal input
+                       must be passed to the command, whether it has required
+                       it or not (the kernel buffers terminals so it is not
+                       possible to tell whether the command really wants the
+                       input).  This is different from historic _s_u_d_o behavior
+                       or when the command is not being run in a pty.
+
+                       For this to work seamlessly, the operating system must
+                       support the automatic restarting of system calls.
+                       Unfortunately, not all operating systems do this by
+                       default, and even those that do may have bugs.  For
+                       example, Mac OS X fails to restart the ttccggeettaattttrr() and
+                       ttccsseettaattttrr() system calls (this is a bug in Mac OS X).
+                       Furthermore, because this behavior depends on the
+                       command stopping with the SIGTTIN or SIGTTOU signals,
+                       programs that catch these signals and suspend
+                       themselves with a different signal (usually SIGTOP)
+                       will not be automatically foregrounded.  Some versions
+                       of the linux su(1) command behave this way.
+
+                       This setting is only supported by version 1.8.7 or
+                       higher.  It has no effect unless I/O logging is enabled
+                       or the _u_s_e___p_t_y flag is enabled.
 
      env_editor        If set, vviissuuddoo will use the value of the EDITOR or
                        VISUAL environment variables before falling back on the
@@ -774,7 +919,7 @@ SSUUDDOOEERRSS OOPPTTIIOONNSS
                        If the system is configured to use the _/_e_t_c_/_h_o_s_t_s file
                        in preference to DNS, the ``canonical'' host name may
                        not be fully-qualified.  The order that sources are
-                       queried for hosts name resolution is usually specified
+                       queried for host name resolution is usually specified
                        in the _/_e_t_c_/_n_s_s_w_i_t_c_h_._c_o_n_f, _/_e_t_c_/_n_e_t_s_v_c_._c_o_n_f,
                        _/_e_t_c_/_h_o_s_t_._c_o_n_f, or, in some cases, _/_e_t_c_/_r_e_s_o_l_v_._c_o_n_f
                        file.  In the _/_e_t_c_/_h_o_s_t_s file, the first host name of
@@ -906,6 +1051,41 @@ SSUUDDOOEERRSS OOPPTTIIOONNSS
                        well as the _P_r_e_v_e_n_t_i_n_g _s_h_e_l_l _e_s_c_a_p_e_s section at the end
                        of this manual.  This flag is _o_f_f by default.
 
+     pam_session       On systems that use PAM for authentication, ssuuddoo will
+                       create a new PAM session for the command to be run in.
+                       Disabling _p_a_m___s_e_s_s_i_o_n may be needed on older PAM
+                       implementations or on operating systems where opening a
+                       PAM session changes the utmp or wtmp files.  If PAM
+                       session support is disabled, resource limits may not be
+                       updated for the command being run.  If _p_a_m___s_e_s_s_i_o_n,
+                       _p_a_m___s_e_t_c_r_e_d, and _u_s_e___p_t_y are disabled and I/O logging
+                       has not been configured, ssuuddoo will execute the command
+                       directly instead of running it as a child process.
+                       This flag is _o_n by default.
+
+                       This setting is only supported by version 1.8.7 or
+                       higher.
+
+     pam_setcred       On systems that use PAM for authentication, ssuuddoo will
+                       attempt to establish credentials for the target user by
+                       default, if supported by the underlying authentication
+                       system.  One example of a credential is a Kerberos
+                       ticket.  If _p_a_m___s_e_s_s_i_o_n, _p_a_m___s_e_t_c_r_e_d, and _u_s_e___p_t_y are
+                       disabled and I/O logging has not been configured, ssuuddoo
+                       will execute the command directly instead of running it
+                       as a child process.  This flag is _o_n by default.
+
+                       This setting is only supported by version 1.8.8 or
+                       higher.
+
+     passprompt_override
+                       The password prompt specified by _p_a_s_s_p_r_o_m_p_t will
+                       normally only be used if the password prompt provided
+                       by systems such as PAM matches the string
+                       ``Password:''.  If _p_a_s_s_p_r_o_m_p_t___o_v_e_r_r_i_d_e is set,
+                       _p_a_s_s_p_r_o_m_p_t will always be used.  This flag is _o_f_f by
+                       default.
+
      path_info         Normally, ssuuddoo will tell the user when a command could
                        not be found in their PATH environment variable.  Some
                        sites may wish to disable this as it could be used to
@@ -915,14 +1095,6 @@ SSUUDDOOEERRSS OOPPTTIIOONNSS
                        the user's PATH, ssuuddoo will tell the user that they are
                        not allowed to run it, which can be confusing.  This
                        flag is _o_n by default.
-
-     passprompt_override
-                       The password prompt specified by _p_a_s_s_p_r_o_m_p_t will
-                       normally only be used if the password prompt provided
-                       by systems such as PAM matches the string
-                       ``Password:''.  If _p_a_s_s_p_r_o_m_p_t___o_v_e_r_r_i_d_e is set,
-                       _p_a_s_s_p_r_o_m_p_t will always be used.  This flag is _o_f_f by
-                       default.
 
      preserve_groups   By default, ssuuddoo will initialize the group vector to
                        the list of groups the target user is in.  When
@@ -957,23 +1129,25 @@ SSUUDDOOEERRSS OOPPTTIIOONNSS
                        This flag is _o_n by default.
 
      rootpw            If set, ssuuddoo will prompt for the root password instead
-                       of the password of the invoking user.  This flag is _o_f_f
-                       by default.
+                       of the password of the invoking user when running a
+                       command or editing a file.  This flag is _o_f_f by
+                       default.
 
      runaspw           If set, ssuuddoo will prompt for the password of the user
                        defined by the _r_u_n_a_s___d_e_f_a_u_l_t option (defaults to root)
-                       instead of the password of the invoking user.  This
-                       flag is _o_f_f by default.
+                       instead of the password of the invoking user when
+                       running a command or editing a file.  This flag is _o_f_f
+                       by default.
 
      set_home          If enabled and ssuuddoo is invoked with the --ss option the
                        HOME environment variable will be set to the home
                        directory of the target user (which is root unless the
                        --uu option is used).  This effectively makes the --ss
                        option imply --HH.  Note that HOME is already set when
-                       the the _e_n_v___r_e_s_e_t option is enabled, so _s_e_t___h_o_m_e is
-                       only effective for configurations where either
-                       _e_n_v___r_e_s_e_t is disabled or HOME is present in the
-                       _e_n_v___k_e_e_p list.  This flag is _o_f_f by default.
+                       the _e_n_v___r_e_s_e_t option is enabled, so _s_e_t___h_o_m_e is only
+                       effective for configurations where either _e_n_v___r_e_s_e_t is
+                       disabled or HOME is present in the _e_n_v___k_e_e_p list.  This
+                       flag is _o_f_f by default.
 
      set_logname       Normally, ssuuddoo will set the LOGNAME, USER and USERNAME
                        environment variables to the name of the target user
@@ -1022,17 +1196,17 @@ SSUUDDOOEERRSS OOPPTTIIOONNSS
 
      targetpw          If set, ssuuddoo will prompt for the password of the user
                        specified by the --uu option (defaults to root) instead
-                       of the password of the invoking user.  In addition, the
-                       time stamp file name will include the target user's
-                       name.  Note that this flag precludes the use of a uid
-                       not listed in the passwd database as an argument to the
-                       --uu option.  This flag is _o_f_f by default.
+                       of the password of the invoking user when running a
+                       command or editing a file.  Note that this flag
+                       precludes the use of a uid not listed in the passwd
+                       database as an argument to the --uu option.  This flag is
+                       _o_f_f by default.
 
      tty_tickets       If set, users must authenticate on a per-tty basis.
-                       With this flag enabled, ssuuddoo will use a file named for
-                       the tty the user is logged in on in the user's time
-                       stamp directory.  If disabled, the time stamp of the
-                       directory is used instead.  This flag is _o_n by default.
+                       With this flag enabled, ssuuddoo will use a separate record
+                       in the time stamp file for each tty.  If disabled, a
+                       single record is used for all login sessions.  This
+                       flag is _o_n by default.
 
      umask_override    If set, ssuuddoo will set the umask as specified by _s_u_d_o_e_r_s
                        without modification.  This makes it possible to
@@ -1189,6 +1363,19 @@ SSUUDDOOEERRSS OOPPTTIIOONNSS
                        unique combination of digits and letters, similar to
                        the mktemp(3) function.
 
+                       If the path created by concatenating _i_o_l_o_g___d_i_r and
+                       _i_o_l_o_g___f_i_l_e already exists, the existing I/O log file
+                       will be truncated and overwritten unless _i_o_l_o_g___f_i_l_e
+                       ends in six or more Xs.
+
+     lecture_status_dir
+                       The directory in which ssuuddoo stores per-user lecture
+                       status files.  Once a user has received the lecture, a
+                       zero-length file is created in this directory so that
+                       ssuuddoo will not lecture the user again.  This directory
+                       should _n_o_t be cleared when the system reboots.  The
+                       default is _/_v_a_r_/_a_d_m_/_s_u_d_o_/_l_e_c_t_u_r_e_d.
+
      limitprivs        The default Solaris limit privileges to use when
                        constructing a new privilege set for a command.  This
                        bounds all privileges of the executing process.  The
@@ -1200,9 +1387,45 @@ SSUUDDOOEERRSS OOPPTTIIOONNSS
                        escape %h will expand to the host name of the machine.
                        Default is ``*** SECURITY information for %h ***''.
 
-     noexec_file       This option is no longer supported.  The path to the
-                       noexec file should now be set in the _/_e_t_c_/_s_u_d_o_._c_o_n_f
-                       file.
+     maxseq            The maximum sequence number that will be substituted
+                       for the ``%{seq}'' escape in the I/O log file (see the
+                       _i_o_l_o_g___d_i_r description above for more information).
+                       While the value substituted for ``%{seq}'' is in base
+                       36, _m_a_x_s_e_q itself should be expressed in decimal.
+                       Values larger than 2176782336 (which corresponds to the
+                       base 36 sequence number ``ZZZZZZ'') will be silently
+                       truncated to 2176782336.  The default value is
+                       2176782336.
+
+                       Once the local sequence number reaches the value of
+                       _m_a_x_s_e_q, it will ``roll over'' to zero, after which
+                       ssuuddooeerrss will truncate and re-use any existing I/O log
+                       path names.
+
+                       This setting is only supported by version 1.8.7 or
+                       higher.
+
+     noexec_file       As of ssuuddoo version 1.8.1 this option is no longer
+                       supported.  The path to the noexec file should now be
+                       set in the sudo.conf(4) file.
+
+     pam_login_service
+                       On systems that use PAM for authentication, this is the
+                       service name used when the --ii option is specified.  The
+                       default value is ``sudo''.  See the description of
+                       _p_a_m___s_e_r_v_i_c_e for more information.
+
+                       This setting is only supported by version 1.8.8 or
+                       higher.
+
+     pam_service       On systems that use PAM for authentication, the service
+                       name specifies the PAM policy to apply.  This usually
+                       corresponds to an entry in the _p_a_m_._c_o_n_f file or a file
+                       in the _/_e_t_c_/_p_a_m_._d directory.  The default value is
+                       ``sudo''.
+
+                       This setting is only supported by version 1.8.8 or
+                       higher.
 
      passprompt        The default prompt to use when asking for a password;
                        can be overridden via the --pp option or the SUDO_PROMPT
@@ -1268,10 +1491,12 @@ SSUUDDOOEERRSS OOPPTTIIOONNSS
                        to ``C''.
 
      timestampdir      The directory in which ssuuddoo stores its time stamp
-                       files.  The default is _/_v_a_r_/_a_d_m_/_s_u_d_o.
+                       files.  This directory should be cleared when the
+                       system reboots.  The default is _/_v_a_r_/_r_u_n_/_s_u_d_o_/_t_s.
 
-     timestampowner    The owner of the time stamp directory and the time
-                       stamps stored therein.  The default is root.
+     timestampowner    The owner of the lecture status directory, time stamp
+                       directory and all files stored therein.  The default is
+                       root.
 
      type              The default SELinux type to use when constructing a new
                        security context to run the command.  The default type
@@ -1295,21 +1520,15 @@ SSUUDDOOEERRSS OOPPTTIIOONNSS
                    a % prefix.  This is not set by default.
 
      group_plugin  A string containing a _s_u_d_o_e_r_s group plugin with optional
-                   arguments.  This can be used to implement support for the
-                   nonunix_group syntax described earlier.  The string should
-                   consist of the plugin path, either fully-qualified or
-                   relative to the _/_u_s_r_/_l_o_c_a_l_/_l_i_b_e_x_e_c directory, followed by
-                   any configuration arguments the plugin requires.  These
+                   arguments.  The string should consist of the plugin path,
+                   either fully-qualified or relative to the
+                   _/_u_s_r_/_l_o_c_a_l_/_l_i_b_e_x_e_c_/_s_u_d_o directory, followed by any
+                   configuration arguments the plugin requires.  These
                    arguments (if any) will be passed to the plugin's
                    initialization function.  If arguments are present, the
                    string must be enclosed in double quotes ("").
 
-                   For example, given _/_e_t_c_/_s_u_d_o_-_g_r_o_u_p, a group file in Unix
-                   group format, the sample group plugin can be used:
-
-                   Defaults group_plugin="sample_group.so /etc/sudo-group"
-
-                   For more information see sudo_plugin(4).
+                   For more information see GROUP PROVIDER PLUGINS.
 
      lecture       This option controls when a short lecture will be printed
                    along with the password prompt.  It has the following
@@ -1446,6 +1665,41 @@ SSUUDDOOEERRSS OOPPTTIIOONNSS
                        variables to keep is displayed when ssuuddoo is run by root
                        with the --VV option.
 
+GGRROOUUPP PPRROOVVIIDDEERR PPLLUUGGIINNSS
+     The ssuuddooeerrss plugin supports its own plugin interface to allow non-Unix
+     group lookups which can query a group source other than the standard Unix
+     group database.  This can be used to implement support for the
+     nonunix_group syntax described earlier.
+
+     Group provider plugins are specified via the _g_r_o_u_p___p_l_u_g_i_n Defaults
+     setting.  The argument to _g_r_o_u_p___p_l_u_g_i_n should consist of the plugin path,
+     either fully-qualified or relative to the _/_u_s_r_/_l_o_c_a_l_/_l_i_b_e_x_e_c_/_s_u_d_o
+     directory, followed by any configuration options the plugin requires.
+     These options (if specified) will be passed to the plugin's
+     initialization function.  If options are present, the string must be
+     enclosed in double quotes ("").
+
+     The following group provider plugins are installed by default:
+
+     group_file
+               The _g_r_o_u_p___f_i_l_e plugin supports an alternate group file that
+               uses the same syntax as the _/_e_t_c_/_g_r_o_u_p file.  The path to the
+               group file should be specified as an option to the plugin.  For
+               example, if the group file to be used is _/_e_t_c_/_s_u_d_o_-_g_r_o_u_p:
+
+               Defaults group_plugin="group_file.so /etc/sudo-group"
+
+     system_group
+               The _s_y_s_t_e_m___g_r_o_u_p plugin supports group lookups via the standard
+               C library functions ggeettggrrnnaamm() and ggeettggrriidd().  This plugin can
+               be used in instances where the user belongs to groups not
+               present in the user's supplemental group vector.  This plugin
+               takes no options:
+
+               Defaults group_plugin=system_group.so
+
+     The group provider plugin API is described in detail in sudo_plugin(1m).
+
 LLOOGG FFOORRMMAATT
      ssuuddooeerrss can log events using either syslog(3) or a simple log file.  In
      each case the log format is almost identical.
@@ -1547,9 +1801,9 @@ LLOOGG FFOORRMMAATT
         when the _s_u_d_o_e_r_s file is located on a remote file system that maps
         user ID 0 to a different value.  Normally, ssuuddooeerrss tries to open
         _s_u_d_o_e_r_s using group permissions to avoid this problem.  Consider
-        changing the ownership of _/_e_t_c_/_s_u_d_o_e_r_s by adding an option like
-        ``sudoers_uid=N'' (where `N' is the user ID that owns the _s_u_d_o_e_r_s
-        file) to the ssuuddooeerrss plugin line in the _/_e_t_c_/_s_u_d_o_._c_o_n_f file.
+        either changing the ownership of _/_e_t_c_/_s_u_d_o_e_r_s or adding an argument
+        like ``sudoers_uid=N'' (where `N' is the user ID that owns the _s_u_d_o_e_r_s
+        file) to the end of the ssuuddooeerrss Plugin line in the sudo.conf(4) file.
 
      unable to stat /etc/sudoers
         The _/_e_t_c_/_s_u_d_o_e_r_s file is missing.
@@ -1561,30 +1815,42 @@ LLOOGG FFOORRMMAATT
      /etc/sudoers is owned by uid N, should be 0
         The _s_u_d_o_e_r_s file has the wrong owner.  If you wish to change the
         _s_u_d_o_e_r_s file owner, please add ``sudoers_uid=N'' (where `N' is the
-        user ID that owns the _s_u_d_o_e_r_s file) to the ssuuddooeerrss plugin line in the
-        _/_e_t_c_/_s_u_d_o_._c_o_n_f file.
+        user ID that owns the _s_u_d_o_e_r_s file) to the ssuuddooeerrss Plugin line in the
+        sudo.conf(4) file.
 
      /etc/sudoers is world writable
         The permissions on the _s_u_d_o_e_r_s file allow all users to write to it.
         The _s_u_d_o_e_r_s file must not be world-writable, the default file mode is
         0440 (readable by owner and group, writable by none).  The default
         mode may be changed via the ``sudoers_mode'' option to the ssuuddooeerrss
-        plugin line in the _/_e_t_c_/_s_u_d_o_._c_o_n_f file.
+        Plugin line in the sudo.conf(4) file.
 
      /etc/sudoers is owned by gid N, should be 1
         The _s_u_d_o_e_r_s file has the wrong group ownership.  If you wish to change
         the _s_u_d_o_e_r_s file group ownership, please add ``sudoers_gid=N'' (where
-        `N' is the group ID that owns the _s_u_d_o_e_r_s file) to the ssuuddooeerrss plugin
-        line in the _/_e_t_c_/_s_u_d_o_._c_o_n_f file.
+        `N' is the group ID that owns the _s_u_d_o_e_r_s file) to the ssuuddooeerrss Plugin
+        line in the sudo.conf(4) file.
 
-     unable to open /var/adm/sudo/username/ttyname
-        _s_u_d_o_e_r_s was unable to read or create the user's time stamp file.
+     unable to open /var/run/sudo/ts/username
+        _s_u_d_o_e_r_s was unable to read or create the user's time stamp file.  This
+        can happen when _t_i_m_e_s_t_a_m_p_o_w_n_e_r is set to a user other than root and
+        the mode on _/_v_a_r_/_r_u_n_/_s_u_d_o is not searchable by group or other.  The
+        default mode for _/_v_a_r_/_r_u_n_/_s_u_d_o is 0711.
 
-     unable to write to /var/adm/sudo/username/ttyname
+     unable to write to /var/run/sudo/ts/username
         _s_u_d_o_e_r_s was unable to write to the user's time stamp file.
 
-     unable to mkdir to /var/adm/sudo/username
-        _s_u_d_o_e_r_s was unable to create the user's time stamp directory.
+     /var/run/sudo/ts is owned by uid X, should be Y
+        The time stamp directory is owned by a user other than _t_i_m_e_s_t_a_m_p_o_w_n_e_r.
+        This can occur when the value of _t_i_m_e_s_t_a_m_p_o_w_n_e_r has been changed.
+        _s_u_d_o_e_r_s will ignore the time stamp directory until the owner is
+        corrected.
+
+     /var/run/sudo/ts is group writable
+        The time stamp directory is group-writable; it should be writable only
+        by _t_i_m_e_s_t_a_m_p_o_w_n_e_r.  The default mode for the time stamp directory is
+        0700.  _s_u_d_o_e_r_s will ignore the time stamp directory until the mode is
+        corrected.
 
    NNootteess oonn llooggggiinngg vviiaa ssyysslloogg
      By default, _s_u_d_o_e_r_s logs messages via syslog(3).  The _d_a_t_e, _h_o_s_t_n_a_m_e, and
@@ -1615,110 +1881,6 @@ LLOOGG FFOORRMMAATT
           _l_o_g_l_i_n_e_l_e_n option is set to 0 (or negated with a `!'), word wrap
           will be disabled.
 
-SSUUDDOO..CCOONNFF
-     The _/_e_t_c_/_s_u_d_o_._c_o_n_f file determines which plugins the ssuuddoo front end will
-     load.  If no _/_e_t_c_/_s_u_d_o_._c_o_n_f file is present, or it contains no Plugin
-     lines, ssuuddoo will use the _s_u_d_o_e_r_s security policy and I/O logging, which
-     corresponds to the following _/_e_t_c_/_s_u_d_o_._c_o_n_f file.
-
-     #
-     # Default /etc/sudo.conf file
-     #
-     # Format:
-     #   Plugin plugin_name plugin_path plugin_options ...
-     #   Path askpass /path/to/askpass
-     #   Path noexec /path/to/sudo_noexec.so
-     #   Debug sudo /var/log/sudo_debug all@warn
-     #   Set disable_coredump true
-     #
-     # The plugin_path is relative to /usr/local/libexec unless
-     #   fully qualified.
-     # The plugin_name corresponds to a global symbol in the plugin
-     #   that contains the plugin interface structure.
-     # The plugin_options are optional.
-     #
-     Plugin policy_plugin sudoers.so
-     Plugin io_plugin sudoers.so
-
-   PPlluuggiinn ooppttiioonnss
-     Starting with ssuuddoo 1.8.5, it is possible to pass options to the _s_u_d_o_e_r_s
-     plugin.  Options may be listed after the path to the plugin (i.e. after
-     _s_u_d_o_e_r_s_._s_o); multiple options should be space-separated.  For example:
-
-     Plugin sudoers_policy sudoers.so sudoers_file=/etc/sudoers sudoers_uid=0 sudoers_gid=0 sudoers_mode=0440
-
-     The following plugin options are supported:
-
-     sudoers_file=pathname
-               The _s_u_d_o_e_r_s___f_i_l_e option can be used to override the default
-               path to the _s_u_d_o_e_r_s file.
-
-     sudoers_uid=uid
-               The _s_u_d_o_e_r_s___u_i_d option can be used to override the default
-               owner of the sudoers file.  It should be specified as a numeric
-               user ID.
-
-     sudoers_gid=gid
-               The _s_u_d_o_e_r_s___g_i_d option can be used to override the default
-               group of the sudoers file.  It should be specified as a numeric
-               group ID.
-
-     sudoers_mode=mode
-               The _s_u_d_o_e_r_s___m_o_d_e option can be used to override the default
-               file mode for the sudoers file.  It should be specified as an
-               octal value.
-
-   DDeebbuugg ffllaaggss
-     Versions 1.8.4 and higher of the _s_u_d_o_e_r_s plugin supports a debugging
-     framework that can help track down what the plugin is doing internally if
-     there is a problem.  This can be configured in the _/_e_t_c_/_s_u_d_o_._c_o_n_f file as
-     described in sudo(1m).
-
-     The _s_u_d_o_e_r_s plugin uses the same debug flag format as the ssuuddoo front-end:
-     _s_u_b_s_y_s_t_e_m@_p_r_i_o_r_i_t_y.
-
-     The priorities used by _s_u_d_o_e_r_s, in order of decreasing severity, are:
-     _c_r_i_t, _e_r_r, _w_a_r_n, _n_o_t_i_c_e, _d_i_a_g, _i_n_f_o, _t_r_a_c_e and _d_e_b_u_g.  Each priority,
-     when specified, also includes all priorities higher than it.  For
-     example, a priority of _n_o_t_i_c_e would include debug messages logged at
-     _n_o_t_i_c_e and higher.
-
-     The following subsystems are used by _s_u_d_o_e_r_s:
-
-     _a_l_i_a_s     User_Alias, Runas_Alias, Host_Alias and Cmnd_Alias processing
-
-     _a_l_l       matches every subsystem
-
-     _a_u_d_i_t     BSM and Linux audit code
-
-     _a_u_t_h      user authentication
-
-     _d_e_f_a_u_l_t_s  _s_u_d_o_e_r_s _D_e_f_a_u_l_t_s settings
-
-     _e_n_v       environment handling
-
-     _l_d_a_p      LDAP-based sudoers
-
-     _l_o_g_g_i_n_g   logging support
-
-     _m_a_t_c_h     matching of users, groups, hosts and netgroups in _s_u_d_o_e_r_s
-
-     _n_e_t_i_f     network interface handling
-
-     _n_s_s       network service switch handling in _s_u_d_o_e_r_s
-
-     _p_a_r_s_e_r    _s_u_d_o_e_r_s file parsing
-
-     _p_e_r_m_s     permission setting
-
-     _p_l_u_g_i_n    The equivalent of _m_a_i_n for the plugin.
-
-     _p_t_y       pseudo-tty related code
-
-     _r_b_t_r_e_e    redblack tree internals
-
-     _u_t_i_l      utility functions
-
 FFIILLEESS
      _/_e_t_c_/_s_u_d_o_._c_o_n_f            Sudo front end configuration
 
@@ -1730,8 +1892,11 @@ FFIILLEESS
 
      _/_v_a_r_/_l_o_g_/_s_u_d_o_-_i_o          I/O log files
 
-     _/_v_a_r_/_a_d_m_/_s_u_d_o             Directory containing time stamps for the
+     _/_v_a_r_/_r_u_n_/_s_u_d_o_/_t_s          Directory containing time stamps for the
                                _s_u_d_o_e_r_s security policy
+
+     _/_v_a_r_/_a_d_m_/_s_u_d_o_/_l_e_c_t_u_r_e_d    Directory containing lecture status files for
+                               the _s_u_d_o_e_r_s security policy
 
      _/_e_t_c_/_e_n_v_i_r_o_n_m_e_n_t          Initial environment for --ii mode on AIX and
                                Linux systems
@@ -1768,7 +1933,9 @@ EEXXAAMMPPLLEESS
 
      # Cmnd alias specification
      Cmnd_Alias      DUMPS = /usr/bin/mt, /usr/sbin/dump, /usr/sbin/rdump,\
-                             /usr/sbin/restore, /usr/sbin/rrestore
+                             /usr/sbin/restore, /usr/sbin/rrestore,\
+                             sha224:0GomF8mNN3wlDt1HD9XldjJ3SNgpFdbjO1+NsQ== \
+                             /home/operator/bin/start_backups
      Cmnd_Alias      KILL = /usr/bin/kill
      Cmnd_Alias      PRINTING = /usr/sbin/lpc, /usr/bin/lprm
      Cmnd_Alias      SHUTDOWN = /usr/sbin/shutdown
@@ -1789,7 +1956,8 @@ EEXXAAMMPPLLEESS
      file and make sure we log the year in each log line since the log entries
      will be kept around for several years.  Lastly, we disable shell escapes
      for the commands in the PAGERS Cmnd_Alias (_/_u_s_r_/_b_i_n_/_m_o_r_e, _/_u_s_r_/_b_i_n_/_p_g and
-     _/_u_s_r_/_b_i_n_/_l_e_s_s).
+     _/_u_s_r_/_b_i_n_/_l_e_s_s).  Note that this will not effectively constrain users with
+     ssuuddoo AALLLL privileges.
 
      # Override built-in defaults
      Defaults                syslog=auth
@@ -1838,7 +2006,11 @@ EEXXAAMMPPLLEESS
      The ooppeerraattoorr user may run commands limited to simple maintenance.  Here,
      those are commands related to backups, killing processes, the printing
      system, shutting down the system, and any commands in the directory
-     _/_u_s_r_/_o_p_e_r_/_b_i_n_/.
+     _/_u_s_r_/_o_p_e_r_/_b_i_n_/.  Note that one command in the DUMPS Cmnd_Alias includes a
+     sha224 digest, _/_h_o_m_e_/_o_p_e_r_a_t_o_r_/_b_i_n_/_s_t_a_r_t___b_a_c_k_u_p_s.  This is because the
+     directory containing the script is writable by the operator user.  If the
+     script is modified (resulting in a digest mismatch) it will no longer be
+     possible to run it via ssuuddoo.
 
      joe             ALL = /usr/bin/su operator
 
@@ -1890,7 +2062,9 @@ EEXXAAMMPPLLEESS
 
      For any machine in the _S_E_R_V_E_R_S Host_Alias, jjiillll may run any commands in
      the directory _/_u_s_r_/_b_i_n_/ except for those commands belonging to the _S_U and
-     _S_H_E_L_L_S Cmnd_Aliases.
+     _S_H_E_L_L_S Cmnd_Aliases.  While not specifically mentioned in the rule, the
+     commands in the _P_A_G_E_R_S Cmnd_Alias all reside in _/_u_s_r_/_b_i_n and have the
+     _n_o_e_x_e_c option set.
 
      steve           CSNETS = (operator) /usr/local/op_commands/
 
@@ -2007,48 +2181,125 @@ SSEECCUURRIITTYY NNOOTTEESS
      as root are still capable of many potentially hazardous operations (such
      as changing or overwriting files) that could lead to unintended privilege
      escalation.  In the specific case of an editor, a safer approach is to
-     give the user permission to run ssuuddooeeddiitt.
+     give the user permission to run ssuuddooeeddiitt (see below).
+
+   SSeeccuurree eeddiittiinngg
+     The _s_u_d_o_e_r_s plugin includes ssuuddooeeddiitt support which allows users to
+     securely edit files with the editor of their choice.  As ssuuddooeeddiitt is a
+     built-in command, it must be specified in _s_u_d_o_e_r_s without a leading path.
+     However, it may take command line arguments just as a normal command
+     does.  For example, to allow user operator to edit the ``message of the
+     day'' file:
+
+           operator        sudoedit /etc/motd
+
+     The operator user then runs ssuuddooeeddiitt as follows:
+
+           $ sudoedit /etc/motd
+
+     The editor will run as the operator user, not root, on a temporary copy
+     of _/_e_t_c_/_m_o_t_d.  After the file has been edited, _/_e_t_c_/_m_o_t_d will be updated
+     with the contents of the temporary copy.
 
    TTiimmee ssttaammpp ffiillee cchheecckkss
      _s_u_d_o_e_r_s will check the ownership of its time stamp directory
-     (_/_v_a_r_/_a_d_m_/_s_u_d_o by default) and ignore the directory's contents if it is
-     not owned by root or if it is writable by a user other than root.  On
-     systems that allow non-root users to give away files via chown(2), if the
-     time stamp directory is located in a world-writable directory (e.g.,
-     _/_t_m_p), it is possible for a user to create the time stamp directory
-     before ssuuddoo is run.  However, because _s_u_d_o_e_r_s checks the ownership and
-     mode of the directory and its contents, the only damage that can be done
-     is to ``hide'' files by putting them in the time stamp dir.  This is
-     unlikely to happen since once the time stamp dir is owned by root and
-     inaccessible by any other user, the user placing files there would be
-     unable to get them back out.
+     (_/_v_a_r_/_r_u_n_/_s_u_d_o_/_t_s by default) and ignore the directory's contents if it
+     is not owned by root or if it is writable by a user other than root.
+     Older versions of ssuuddoo stored time stamp files in _/_t_m_p; this is no longer
+     recommended as it may be possible for a user to create the time stamp
+     themselves on systems that allow unprivileged users to change the
+     ownership of files they create.
+
+     While the time stamp directory _s_h_o_u_l_d be cleared at reboot time, not all
+     systems contain a _/_v_a_r_/_r_u_n directory.  To avoid potential problems,
+     _s_u_d_o_e_r_s will ignore time stamp files that date from before the machine
+     booted on systems where the boot time is available.
+
+     Some systems with graphical desktop environments allow unprivileged users
+     to change the system clock.  Since _s_u_d_o_e_r_s relies on the system clock for
+     time stamp validation, it may be possible on such systems for a user to
+     run ssuuddoo for longer than _t_i_m_e_s_t_a_m_p___t_i_m_e_o_u_t by setting the clock back.  To
+     combat this, _s_u_d_o_e_r_s uses a monotonic clock (which never moves backwards)
+     for its time stamps if the system supports it.
 
      _s_u_d_o_e_r_s will not honor time stamps set far in the future.  Time stamps
      with a date greater than current_time + 2 * TIMEOUT will be ignored and
-     sudo will log and complain.  This is done to keep a user from creating
-     his/her own time stamp with a bogus date on systems that allow users to
-     give away files if the time stamp directory is located in a world-
-     writable directory.
-
-     On systems where the boot time is available, _s_u_d_o_e_r_s will ignore time
-     stamps that date from before the machine booted.
+     _s_u_d_o_e_r_s will log and complain.
 
      Since time stamp files live in the file system, they can outlive a user's
      login session.  As a result, a user may be able to login, run a command
      with ssuuddoo after authenticating, logout, login again, and run ssuuddoo without
-     authenticating so long as the time stamp file's modification time is
-     within 5 minutes (or whatever the timeout is set to in _s_u_d_o_e_r_s).  When
-     the _t_t_y___t_i_c_k_e_t_s option is enabled, the time stamp has per-tty granularity
-     but still may outlive the user's session.  On Linux systems where the
-     devpts filesystem is used, Solaris systems with the devices filesystem,
-     as well as other systems that utilize a devfs filesystem that
-     monotonically increase the inode number of devices as they are created
-     (such as Mac OS X), _s_u_d_o_e_r_s is able to determine when a tty-based time
-     stamp file is stale and will ignore it.  Administrators should not rely
-     on this feature as it is not universally available.
+     authenticating so long as the record's time stamp is within 5 minutes (or
+     whatever value the timeout is set to in _s_u_d_o_e_r_s).  When the _t_t_y___t_i_c_k_e_t_s
+     option is enabled, the time stamp record includes the device number of
+     the terminal the user authenticated with.  This provides per-tty
+     granularity but time stamp records still may outlive the user's session.
+     The time stamp record also includes the session ID of the process that
+     last authenticated.  This prevents processes in different terminal
+     sessions from using the same time stamp record.  It also helps reduce the
+     chance that a user will be able to run ssuuddoo without entering a password
+     when logging out and back in again on the same terminal.
+
+DDEEBBUUGGGGIINNGG
+     Versions 1.8.4 and higher of the ssuuddooeerrss plugin support a flexible
+     debugging framework that can help track down what the plugin is doing
+     internally if there is a problem.  This can be configured in the
+     sudo.conf(4) file.
+
+     The ssuuddooeerrss plugin uses the same debug flag format as the ssuuddoo front-end:
+     _s_u_b_s_y_s_t_e_m@_p_r_i_o_r_i_t_y.
+
+     The priorities used by ssuuddooeerrss, in order of decreasing severity, are:
+     _c_r_i_t, _e_r_r, _w_a_r_n, _n_o_t_i_c_e, _d_i_a_g, _i_n_f_o, _t_r_a_c_e and _d_e_b_u_g.  Each priority,
+     when specified, also includes all priorities higher than it.  For
+     example, a priority of _n_o_t_i_c_e would include debug messages logged at
+     _n_o_t_i_c_e and higher.
+
+     The following subsystems are used by the ssuuddooeerrss plugin:
+
+     _a_l_i_a_s     User_Alias, Runas_Alias, Host_Alias and Cmnd_Alias processing
+
+     _a_l_l       matches every subsystem
+
+     _a_u_d_i_t     BSM and Linux audit code
+
+     _a_u_t_h      user authentication
+
+     _d_e_f_a_u_l_t_s  _s_u_d_o_e_r_s _D_e_f_a_u_l_t_s settings
+
+     _e_n_v       environment handling
+
+     _l_d_a_p      LDAP-based sudoers
+
+     _l_o_g_g_i_n_g   logging support
+
+     _m_a_t_c_h     matching of users, groups, hosts and netgroups in _s_u_d_o_e_r_s
+
+     _n_e_t_i_f     network interface handling
+
+     _n_s_s       network service switch handling in _s_u_d_o_e_r_s
+
+     _p_a_r_s_e_r    _s_u_d_o_e_r_s file parsing
+
+     _p_e_r_m_s     permission setting
+
+     _p_l_u_g_i_n    The equivalent of _m_a_i_n for the plugin.
+
+     _p_t_y       pseudo-tty related code
+
+     _r_b_t_r_e_e    redblack tree internals
+
+     _s_s_s_d      SSSD-based sudoers
+
+     _u_t_i_l      utility functions
+     For example:
+
+     Debug sudo /var/log/sudo_debug match@info,nss@info
+
+     For more information, see the sudo.conf(4) manual.
 
 SSEEEE AALLSSOO
-     ssh(1), su(1), fnmatch(3), glob(3), mktemp(3), strftime(3),
+     ssh(1), su(1), fnmatch(3), glob(3), mktemp(3), strftime(3), sudo.conf(4),
      sudoers.ldap(4), sudo_plugin(1m), sudo(1m), visudo(1m)
 
 CCAAVVEEAATTSS
@@ -2078,4 +2329,4 @@ DDIISSCCLLAAIIMMEERR
      file distributed with ssuuddoo or http://www.sudo.ws/sudo/license.html for
      complete details.
 
-Sudo 1.8.6                       July 16, 2012                      Sudo 1.8.6
+Sudo 1.8.10                    February 15, 2014                   Sudo 1.8.10

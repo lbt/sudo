@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999-2005, 2008, 2010-2011
+ * Copyright (c) 1999-2005, 2008, 2010-2013
  *	Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -22,7 +22,6 @@
 #include <config.h>
 
 #include <sys/types.h>
-#include <sys/param.h>
 #include <stdio.h>
 #ifdef STDC_HEADERS
 # include <stdlib.h>
@@ -57,22 +56,22 @@ sudo_fwtk_init(struct passwd *pw, sudo_auth *auth)
     debug_decl(sudo_fwtk_init, SUDO_DEBUG_AUTH)
 
     if ((confp = cfg_read("sudo")) == (Cfg *)-1) {
-	warningx(_("unable to read fwtk config"));
+	warningx(U_("unable to read fwtk config"));
 	debug_return_int(AUTH_FATAL);
     }
 
     if (auth_open(confp)) {
-	warningx(_("unable to connect to authentication server"));
+	warningx(U_("unable to connect to authentication server"));
 	debug_return_int(AUTH_FATAL);
     }
 
     /* Get welcome message from auth server */
     if (auth_recv(resp, sizeof(resp))) {
-	warningx(_("lost connection to authentication server"));
+	warningx(U_("lost connection to authentication server"));
 	debug_return_int(AUTH_FATAL);
     }
     if (strncmp(resp, "Authsrv ready", 13) != 0) {
-	warningx(_("authentication server error:\n%s"), resp);
+	warningx(U_("authentication server error:\n%s"), resp);
 	debug_return_int(AUTH_FATAL);
     }
 
@@ -83,7 +82,7 @@ int
 sudo_fwtk_verify(struct passwd *pw, char *prompt, sudo_auth *auth)
 {
     char *pass;				/* Password from the user */
-    char buf[SUDO_PASS_MAX + 12];	/* General prupose buffer */
+    char buf[SUDO_CONV_REPL_MAX + 12];	/* General prupose buffer */
     char resp[128];			/* Response from the server */
     int error;
     debug_decl(sudo_fwtk_verify, SUDO_DEBUG_AUTH)
@@ -92,7 +91,7 @@ sudo_fwtk_verify(struct passwd *pw, char *prompt, sudo_auth *auth)
     (void) snprintf(buf, sizeof(buf), "authorize %s 'sudo'", pw->pw_name);
 restart:
     if (auth_send(buf) || auth_recv(resp, sizeof(resp))) {
-	warningx(_("lost connection to authentication server"));
+	warningx(U_("lost connection to authentication server"));
 	debug_return_int(AUTH_FATAL);
     }
 
@@ -125,7 +124,7 @@ restart:
     /* Send the user's response to the server */
     (void) snprintf(buf, sizeof(buf), "response '%s'", pass);
     if (auth_send(buf) || auth_recv(resp, sizeof(resp))) {
-	warningx(_("lost connection to authentication server"));
+	warningx(U_("lost connection to authentication server"));
 	error = AUTH_FATAL;
 	goto done;
     }
@@ -140,8 +139,8 @@ restart:
 	warningx("%s", resp);
     error = AUTH_FAILURE;
 done:
-    zero_bytes(pass, strlen(pass));
-    zero_bytes(buf, strlen(buf));
+    memset_s(pass, SUDO_PASS_MAX, 0, strlen(pass));
+    memset_s(buf, sizeof(buf), 0, sizeof(buf));
     debug_return_int(error);
 }
 

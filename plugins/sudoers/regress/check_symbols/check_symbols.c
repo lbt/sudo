@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2012-2013 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -35,25 +35,24 @@
 #ifdef HAVE_STRINGS_H
 # include <strings.h>
 #endif /* HAVE_STRINGS_H */
-#ifdef HAVE_DLOPEN
-# include <dlfcn.h>
-#else
-# include "compat/dlfcn.h"
-#endif
 #include <errno.h>
 #include <limits.h>
 
 #include "missing.h"
-#include "error.h"
+#include "sudo_dso.h"
+#include "sudo_util.h"
+#include "fatal.h"
 
 #ifndef LINE_MAX
 # define LINE_MAX 2048
 #endif
 
+__dso_public int main(int argc, char *argv[]);
+
 static void
 usage(void)
 {
-    fprintf(stderr, "usage: load_symbols plugin.so symbols_file\n");
+    fprintf(stderr, "usage: %s plugin.so symbols_file\n", getprogname());
     exit(1);
 }
 
@@ -67,30 +66,29 @@ main(int argc, char *argv[])
     FILE *fp;
     int ntests = 0, errors = 0;
 
-#if !defined(HAVE_GETPROGNAME) && !defined(HAVE___PROGNAME)
-    setprogname(argc > 0 ? argv[0] : "check_symbols");
-#endif
+    initprogname(argc > 0 ? argv[0] : "check_symbols");
 
     if (argc != 3)
 	usage();
     plugin_path = argv[1];
     symbols_file = argv[2];
 
-    handle = dlopen(plugin_path, RTLD_LAZY|RTLD_GLOBAL);
+    handle = sudo_dso_load(plugin_path, SUDO_DSO_LAZY|SUDO_DSO_GLOBAL);
     if (handle == NULL)
-	errorx2(1, "unable to dlopen %s: %s", plugin_path, dlerror());
+	fatalx_nodebug("unable to load %s: %s", plugin_path, sudo_dso_strerror());
 
     fp = fopen(symbols_file, "r");
     if (fp == NULL)
-	error2(1, "unable to open %s", symbols_file);
+	fatal_nodebug("unable to open %s", symbols_file);
 
     while (fgets(line, sizeof(line), fp) != NULL) {
 	ntests++;
 	if ((cp = strchr(line, '\n')) != NULL)
 	    *cp = '\0';
-	sym = dlsym(handle, line);
+	sym = sudo_dso_findsym(handle, line);
 	if (sym == NULL) {
-	    warningx2("unable to resolve symbol %s: %s", line, dlerror());
+	    printf("%s: test %d: unable to resolve symbol %s: %s\n",
+		getprogname(), ntests, line, sudo_dso_strerror());
 	    errors++;
 	}
     }
@@ -98,23 +96,18 @@ main(int argc, char *argv[])
     /*
      * Make sure unexported symbols are not available.
      */
-    sym = dlsym(handle, "user_in_group");
+    ntests++;
+    sym = sudo_dso_findsym(handle, "user_in_group");
     if (sym != NULL) {
-	warningx2("able to resolve local symbol user_in_group");
+	printf("%s: test %d: able to resolve local symbol user_in_group\n",
+	    getprogname(), ntests);
 	errors++;
     }
-    ntests++;
 
-    dlclose(handle);
+    sudo_dso_unload(handle);
 
-    printf("check_symbols: %d tests run, %d errors, %d%% success rate\n",
+    printf("%s: %d tests run, %d errors, %d%% success rate\n", getprogname(),
 	ntests, errors, (ntests - errors) * 100 / ntests);
 
     exit(errors);
-}
-
-void
-cleanup(int gotsig)
-{
-    return;
 }

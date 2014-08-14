@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999-2005, 2008, 2010-2011
+ * Copyright (c) 1999-2005, 2008, 2010-2013
  *	Todd C. Miller <Todd.Miller@courtesan.com>
  * Copyright (c) 1990, 1993
  *	The Regents of the University of California.  All rights reserved.
@@ -41,8 +41,11 @@
 
 #include <config.h>
 
+#if !defined(HAVE_VSNPRINTF) || !defined(HAVE_SNPRINTF) || \
+    !defined(HAVE_VASPRINTF) || !defined(HAVE_ASPRINTF) || \
+    defined(PREFER_PORTABLE_SNPRINTF)
+
 #include <sys/types.h>
-#include <sys/param.h>
 
 #include <stdio.h>
 #ifdef STDC_HEADERS
@@ -53,8 +56,10 @@
 #  include <stdlib.h>
 # endif
 #endif /* STDC_HEADERS */
-#ifdef HAVE_STDINT_H
+#if defined(HAVE_STDINT_H)
 # include <stdint.h>
+#elif defined(HAVE_INTTYPES_H)
+# include <inttypes.h>
 #endif
 #ifdef HAVE_STRING_H
 # if defined(HAVE_MEMORY_H) && !defined(STDC_HEADERS)
@@ -76,32 +81,6 @@
 static int xxxprintf(char **, size_t, int, const char *, va_list);
 
 /*
- * Some systems may not have these defined in <limits.h>
- */
-#ifndef ULONG_MAX
-# define ULONG_MAX	((unsigned long)-1)
-#endif
-#ifndef LONG_MAX
-# define LONG_MAX	(ULONG_MAX / 2)
-#endif
-#ifdef HAVE_LONG_LONG_INT
-# ifndef ULLONG_MAX
-#  ifdef UQUAD_MAX
-#   define ULLONG_MAX	UQUAD_MAX
-#  else
-#   define ULLONG_MAX	((unsigned long long)-1)
-#  endif
-# endif
-# ifndef LLONG_MAX
-#  ifdef QUAD_MAX
-#   define LLONG_MAX	QUAD_MAX
-#  else
-#   define LLONG_MAX	(ULLONG_MAX / 2)
-#  endif
-# endif
-#endif /* HAVE_LONG_LONG_INT */
-
-/*
  * Macros for converting digits to letters and vice versa
  */
 #define	to_digit(c)	((c) - '0')
@@ -116,7 +95,7 @@ static int xxxprintf(char **, size_t, int, const char *, va_list);
 #define	LADJUST		0x004		/* left adjustment */
 #define	LONGDBL		0x008		/* long double; unimplemented */
 #define	LONGINT		0x010		/* long integer */
-#define	QUADINT		0x020		/* quad integer */
+#define	LLONGINT		0x020		/* quad integer */
 #define	SHORTINT	0x040		/* short integer */
 #define	ZEROPAD		0x080		/* zero (as opposed to blank) pad */
 
@@ -184,12 +163,11 @@ __ultoa(unsigned long val, char *endp, int base, int octzero, char *xdigs)
 }
 
 /* Identical to __ultoa, but for quads. */
-#ifdef HAVE_LONG_LONG_INT
-# if SIZEOF_LONG_INT == 8
-#  define __uqtoa(v, e, b, o, x) __ultoa((unsigned long)(v), (e), (b), (o), (x))
-# else
+#if SIZEOF_LONG_INT == 8
+# define __ulltoa(v, e, b, o, x) __ultoa((unsigned long)(v), (e), (b), (o), (x))
+#else
 static char *
-__uqtoa(unsigned long long val, char *endp, int base, int octzero, char *xdigs)
+__ulltoa(unsigned long long val, char *endp, int base, int octzero, char *xdigs)
 {
 	char *cp = endp;
 	long long sval;
@@ -236,8 +214,7 @@ __uqtoa(unsigned long long val, char *endp, int base, int octzero, char *xdigs)
 	}
 	return cp;
 }
-# endif /* !SIZEOF_LONG_INT */
-#endif /* HAVE_LONG_LONG_INT */
+#endif /* !SIZEOF_LONG_INT */
 
 /*
  * Actual printf innards.
@@ -255,9 +232,7 @@ xxxprintf(char **strp, size_t strsize, int alloc, const char *fmt0, va_list ap)
 	int prec;		/* precision from format (%.3d), or -1 */
 	char sign;		/* sign prefix (' ', '+', '-', or \0) */
 	unsigned long ulval = 0; /* integer arguments %[diouxX] */
-#ifdef HAVE_LONG_LONG_INT
-	unsigned long long uqval = 0; /* %q (quad) integers */
-#endif
+	unsigned long long ullval = 0; /* long long arguments %ll[diouxX] */
 	int base;		/* base for [diouxX] conversion */
 	int dprec;		/* a copy of prec if [diouxX], 0 otherwise */
 	int fieldsz;		/* field size expanded by sign, etc */
@@ -430,13 +405,13 @@ reswitch:	switch (ch) {
 			flags |= SHORTINT;
 			goto rflag;
 		case 'l':
-			flags |= LONGINT;
+			if (*fmt == 'l') {
+				fmt++;
+				flags |= LLONGINT;
+			} else {
+				flags |= LONGINT;
+			}
 			goto rflag;
-#ifdef HAVE_LONG_LONG_INT
-		case 'q':
-			flags |= QUADINT;
-			goto rflag;
-#endif /* HAVE_LONG_LONG_INT */
 		case 'c':
 			*(cp = buf) = va_arg(ap, int);
 			size = 1;
@@ -447,17 +422,13 @@ reswitch:	switch (ch) {
 			/*FALLTHROUGH*/
 		case 'd':
 		case 'i':
-#ifdef HAVE_LONG_LONG_INT
-			if (flags & QUADINT) {
-				uqval = va_arg(ap, long long);
-				if ((long long)uqval < 0) {
-					uqval = -uqval;
+			if (flags & LLONGINT) {
+				ullval = va_arg(ap, long long);
+				if ((long long)ullval < 0) {
+					ullval = -ullval;
 					sign = '-';
 				}
-			}
-			else
-#endif /* HAVE_LONG_LONG_INT */
-			{
+			} else {
 				ulval = SARG();
 				if ((long)ulval < 0) {
 					ulval = -ulval;
@@ -467,12 +438,9 @@ reswitch:	switch (ch) {
 			base = 10;
 			goto number;
 		case 'n':
-#ifdef HAVE_LONG_LONG_INT
-			if (flags & QUADINT)
+			if (flags & LLONGINT)
 				*va_arg(ap, long long *) = ret;
-			else
-#endif /* HAVE_LONG_LONG_INT */
-			if (flags & LONGINT)
+			else if (flags & LONGINT)
 				*va_arg(ap, long *) = ret;
 			else if (flags & SHORTINT)
 				*va_arg(ap, short *) = ret;
@@ -483,11 +451,9 @@ reswitch:	switch (ch) {
 			flags |= LONGINT;
 			/*FALLTHROUGH*/
 		case 'o':
-#ifdef HAVE_LONG_LONG_INT
-			if (flags & QUADINT)
-				uqval = va_arg(ap, unsigned long long);
+			if (flags & LLONGINT)
+				ullval = va_arg(ap, unsigned long long);
 			else
-#endif /* HAVE_LONG_LONG_INT */
 				ulval = UARG();
 			base = 8;
 			goto nosign;
@@ -502,7 +468,7 @@ reswitch:	switch (ch) {
 			ulval = (unsigned long)va_arg(ap, void *);
 			base = 16;
 			xdigs = "0123456789abcdef";
-			flags = (flags & ~QUADINT) | HEXPREFIX;
+			flags = (flags & ~LLONGINT) | HEXPREFIX;
 			ch = 'x';
 			goto nosign;
 		case 's':
@@ -530,11 +496,9 @@ reswitch:	switch (ch) {
 			flags |= LONGINT;
 			/*FALLTHROUGH*/
 		case 'u':
-#ifdef HAVE_LONG_LONG_INT
-			if (flags & QUADINT)
-				uqval = va_arg(ap, unsigned long long);
+			if (flags & LLONGINT)
+				ullval = va_arg(ap, unsigned long long);
 			else
-#endif /* HAVE_LONG_LONG_INT */
 				ulval = UARG();
 			base = 10;
 			goto nosign;
@@ -544,20 +508,14 @@ reswitch:	switch (ch) {
 		case 'x':
 			xdigs = "0123456789abcdef";
 hex:
-#ifdef HAVE_LONG_LONG_INT
-			if (flags & QUADINT)
-				uqval = va_arg(ap, unsigned long long);
+			if (flags & LLONGINT)
+				ullval = va_arg(ap, unsigned long long);
 			else
-#endif /* HAVE_LONG_LONG_INT */
 				ulval = UARG();
 			base = 16;
 			/* leading 0x/X only if non-zero */
 			if (flags & ALT &&
-#ifdef HAVE_LONG_LONG_INT
-			    (flags & QUADINT ? uqval != 0 : ulval != 0))
-#else
-			    ulval != 0)
-#endif /* HAVE_LONG_LONG_INT */
+			    (flags & LLONGINT ? ullval != 0 : ulval != 0))
 				flags |= HEXPREFIX;
 
 			/* unsigned conversions */
@@ -576,15 +534,11 @@ number:			if ((dprec = prec) >= 0)
 			 *	-- ANSI X3J11
 			 */
 			cp = buf + BUF;
-#ifdef HAVE_LONG_LONG_INT
-			if (flags & QUADINT) {
-				if (uqval != 0 || prec != 0)
-					cp = __uqtoa(uqval, cp, base,
+			if (flags & LLONGINT) {
+				if (ullval != 0 || prec != 0)
+					cp = __ulltoa(ullval, cp, base,
 					    flags & ALT, xdigs);
-			}
-			else
-#endif /* HAVE_LONG_LONG_INT */
-			{
+			} else {
 				if (ulval != 0 || prec != 0)
 					cp = __ultoa(ulval, cp, base,
 					    flags & ALT, xdigs);
@@ -660,18 +614,18 @@ done:
 	/* NOTREACHED */
 }
 
-#ifndef HAVE_VSNPRINTF
+#if !defined(HAVE_VSNPRINTF) || defined(PREFER_PORTABLE_SNPRINTF)
 int
-vsnprintf(char *str, size_t n, const char *fmt, va_list ap)
+rpl_vsnprintf(char *str, size_t n, const char *fmt, va_list ap)
 {
 
 	return xxxprintf(&str, n, 0, fmt, ap);
 }
-#endif /* HAVE_VSNPRINTF */
+#endif /* !HAVE_VSNPRINTF || PREFER_PORTABLE_SNPRINTF */
 
-#ifndef HAVE_SNPRINTF
+#if !defined(HAVE_SNPRINTF) || defined(PREFER_PORTABLE_SNPRINTF)
 int
-snprintf(char *str, size_t n, char const *fmt, ...)
+rpl_snprintf(char *str, size_t n, char const *fmt, ...)
 {
 	int ret;
 	va_list ap;
@@ -681,20 +635,20 @@ snprintf(char *str, size_t n, char const *fmt, ...)
 	va_end(ap);
 	return ret;
 }
-#endif /* HAVE_SNPRINTF */
+#endif /* !HAVE_SNPRINTF || PREFER_PORTABLE_SNPRINTF */
 
-#ifndef HAVE_VASPRINTF
+#if !defined(HAVE_VASPRINTF) || defined(PREFER_PORTABLE_SNPRINTF)
 int
-vasprintf(char **str, const char *fmt, va_list ap)
+rpl_vasprintf(char **str, const char *fmt, va_list ap)
 {
 
 	return xxxprintf(str, 0, 1, fmt, ap);
 }
-#endif /* HAVE_VASPRINTF */
+#endif /* !HAVE_VASPRINTF || PREFER_PORTABLE_SNPRINTF */
 
-#ifndef HAVE_ASPRINTF
+#if !defined(HAVE_ASPRINTF) || defined(PREFER_PORTABLE_SNPRINTF)
 int
-asprintf(char **str, char const *fmt, ...)
+rpl_asprintf(char **str, char const *fmt, ...)
 {
 	int ret;
 	va_list ap;
@@ -704,4 +658,6 @@ asprintf(char **str, char const *fmt, ...)
 	va_end(ap);
 	return ret;
 }
-#endif /* HAVE_ASPRINTF */
+#endif /* !HAVE_ASPRINTF || PREFER_PORTABLE_SNPRINTF */
+
+#endif /* !HAVE_VSNPRINTF || !HAVE_SNPRINTF || !HAVE_VASPRINTF || !HAVE_ASPRINTF || PREFER_PORTABLE_SNPRINTF */

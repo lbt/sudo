@@ -22,7 +22,7 @@ A) Sudo must be setuid root to do its work.  Either /usr/local/bin/sudo
    is not owned by uid 0 or the setuid bit is not set.  This should have
    been done for you by "make install" but you can fix it manually by
    running the following as root:
-    # chown root /usr/local/bin/sudo; chmod 4111 /usr/local/bin/sudo
+    # chown root /usr/local/bin/sudo; chmod 4755 /usr/local/bin/sudo
 
 Q) Sudo compiles and installs OK but when I try to run it I get:
     effective uid is not 0, is /usr/local/bin/sudo on a file system with the
@@ -31,17 +31,13 @@ A) The owner and permissions on the sudo binary appear to be OK but when
    sudo ran, the setuid bit did not have an effect.  There are two common
    causes for this.  The first is that the file system the sudo binary
    is located on is mounted with the 'nosuid' mount option, which disables
-   setuid binaries.  The other is that sudo is installed on an NFS-mounted
-   file system that is exported without root privileges.  By default, NFS
-   file systems are exported with uid 0 mapped to a non-privileged uid
-   (usually -2).
-
-You need to do something like
-   `chmod 4111 /usr/local/bin/sudo'.  Also, the file system sudo resides
-   on must *not* be mounted (or exported) with the nosuid option or sudo
-   will not be able to work.  Another possibility is you may have '.' in
-   your $PATH before the directory containing sudo.  If you are going
-   to have '.' in your path you should make sure it is at the end.
+   setuid binaries.  The output of the "mount" command should tell you if
+   the file system is mounted with the 'nosuid' option.  The other possible
+   cause is that sudo is installed on an NFS-mounted file system that is
+   exported without root privileges.  By default, NFS file systems are
+   exported with uid 0 mapped to a non-privileged uid (usually -2).  You
+   should be able to determine whether sudo is located on an NFS-mounted
+   filesystem by running "df `which sudo'".
 
 Q) Sudo never gives me a chance to enter a password using PAM, it just
    says 'Sorry, try again.' three times and exits.
@@ -67,7 +63,7 @@ A) Make sure you have an entry in your syslog.conf file to save
    its conf file.  Also, remember that syslogd does *not* create
    log files, you need to create the file before syslogd will log
    to it (ie: touch /var/log/sudo).
-   Note:  the facility (e.g. "auth.debug") must be separated from the 
+   Note:  the facility (e.g. "auth.debug") must be separated from the
 	  destination (e.g. "/var/log/auth" or "@loghost") by
 	  tabs, *not* spaces.  This is a common error.
 
@@ -182,6 +178,17 @@ A) Starting with Solaris 2.6, snprintf(3) is included in the standard
 	#define HAVE_VSNPRINTF 1
    and run make.
 
+Q) I built sudo on a Solaris 11 (or higher) machine but the resulting
+   binary doesn't work older Solaris versions.  Why?
+
+A) Starting with Solaris 11, asprintf(3) is included in the standard
+   C library.  To build a version of sudo on a Solaris 11 machine that
+   will run on an older Solaris release, edit config.h and comment out
+   the lines:
+	#define HAVE_ASPRINTF 1
+	#define HAVE_VASPRINTF 1
+   and run make.
+
 Q) When I run "visudo" it says "sudoers file busy, try again later."
    and doesn't do anything.
 A) Someone else is currently editing the sudoers file with visudo.
@@ -240,6 +247,18 @@ A) On systems that use a Mozilla-derived LDAP SDK there must be a
     Enter new password: <return>
     Re-enter password: <return>
 
+Q) On HP-UX, when I run command via sudo it displays information
+   about the last successful login and last authentication failure
+   for every command.  How can I fix this?
+A) This output comes from /usr/lib/security/libpam_hpsec.so.1.
+   To suppress it, add a line like the following to /etc/pam.conf:
+   sudo session required libpam_hpsec.so.1 bypass_umask bypass_last_login
+
+Q) On HP-UX, the umask setting in sudoers has no effect.
+A) If your /etc/pam.conf file has the libpam_hpsec.so.1 session module
+   enabled, you may need to a add line like the following to pam.conf:
+   sudo session required libpam_hpsec.so.1 bypass_umask
+
 Q) When I run sudo on AIX I get the following error:
     setuidx(ID_EFFECTIVE|ID_REAL|ID_SAVED, ROOT_UID): Operation not permitted.
 A) AIX's Enhanced RBAC is preventing sudo from running.  To fix
@@ -250,6 +269,15 @@ A) AIX's Enhanced RBAC is preventing sudo from running.  To fix
 	    accessauths = ALLOW_ALL
 	    innateprivs = PV_DAC_GID,PV_DAC_O,PV_DAC_R,PV_DAC_UID,PV_DAC_W,PV_DAC_X,PV_FS_CHOWN,PV_PROC_ENV,PV_PROC_PRIO,PV_PROC_RAC
 	    secflags = FSF_EPS
+
+Q) Sudo configures and builds without error but when I run it I get
+   a Segmentation fault.
+A) If you are on a Linux system, the first thing to try is to run
+   configure with the --disable-pie option, then "make clean" and
+   "make".  If that fixes the problem then your operating system
+   does not properly support position independent executables.
+   Please send a message to sudo@sudo.ws with system details such
+   as the Linux distro, kernel version and CPU architecture.
 
 Q) When I run configure I get the following error:
     dlopen present but libtool doesn't appear to support your platform.

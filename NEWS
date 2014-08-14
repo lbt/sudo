@@ -1,3 +1,416 @@
+What's new in Sudo 1.8.10p3?
+
+ * Fixed expansion of %p in the prompt for "sudo -l" when rootpw,
+   runaspw or targetpw is set.  Bug #639
+
+ * Fixed matching of uids and gids which was broken in version 1.8.9.
+   Bug #640
+
+ * PAM credential initialization has been re-enabled.  It was
+   unintentionally disabled by default in version 1.8.8.  The way
+   credentials are initialized has also been fixed.  Bug #642.
+
+ * Fixed a descriptor leak on Linux when determing boot time.  Sudo
+   normally closes extra descriptors before running a command so
+   the impact is limited.  Bug #645
+
+ * Fixed flushing of the last buffer of data when I/O logging is
+   enabled.  This bug, introduced in version 1.8.9, could cause
+   incomplete command output on some systems.  Bug #646
+
+What's new in Sudo 1.8.10p2?
+
+ * Fixed a hang introduced in sudo 1.8.10 when timestamp_timeout
+   is set to zero.
+
+What's new in Sudo 1.8.10p1?
+
+ * Fixed a bug introduced in sudo 1.8.10 that prevented the disabling
+   of tty-based tickets.
+
+ * Fixed a bug with netgated commands in "sudo -l command" that
+   could cause the command to be listed even when it was explicitly
+   denied.  This only affected list mode when a command was specified.
+   Bug #636
+
+What's new in Sudo 1.8.10?
+
+ * It is now possible to disable network interface probing in
+   sudo.conf by changing the value of the probe_interfaces
+   setting.
+
+ * When listing a user's privileges (sudo -l), the sudoers plugin
+   will now prompt for the user's password even if the targetpw,
+   rootpw or runaspw options are set.
+
+ * The sudoers plugin uses a new format for its time stamp files.
+   Each user now has a single file which may contain multiple records
+   when per-tty time stamps are in use (the default).  The time
+   stamps use a monotonic timer where available and are once again
+   located in a directory under /var/run.  The lecture status is
+   now stored separately from the time stamps in a different directory.
+   Bug #616
+
+ * sudo's -K option will now remove all of the user's time stamps,
+   not just the time stamp for the current terminal.  The -k option
+   can be used to only disable time stamps for the current terminal.
+
+ * If sudo was started in the background and needed to prompt for
+   a password, it was not possible to suspend it at the password
+   prompt.  This now works properly.
+
+ * LDAP-based sudoers now uses a default search filter of
+   (objectClass=sudoRole) for more efficient queries.  The netgroup
+   query has been modified to avoid falling below the minimum length
+   for OpenLDAP substring indices.
+
+ * The new "use_netgroups" sudoers option can be used to explicitly
+   enable or disable netgroups support.  For LDAP-based sudoers,
+   netgroup support requires an expensive substring match on the
+   server.  If netgroups are not needed, this option can be disabled
+   to reduce the load on the LDAP server.
+
+ * Sudo is once again able to open the sudoers file when the group
+   on sudoers doesn't match the expected value, so long as the file
+   is not group writable.
+
+ * Sudo now installs an init.d script to clear the time stamp
+   directory at boot time on AIX and HP-UX systems.  These systems
+   either lack /var/run or do not clear it on boot.
+
+ * The JSON format used by "visudo -x" now properly supports the
+   negation operator.  In addition, the Options object is now the
+   same for both Defaults and Cmnd_Specs.
+
+ * Czech and Serbian translations for sudoers from translationproject.org.
+
+ * Catalan translation for sudo from translationproject.org.
+
+What's new in Sudo 1.8.9p5?
+
+ * Fixed a compilation error on AIX when LDAP support is enabled.
+
+ * Fixed parsing of the "umask" defaults setting in sudoers.  Bug #632.
+
+ * Fixed a failed assertion when the "closefrom_override" defaults
+   setting is enabled in sudoers and sudo's -C flag is used.  Bug #633.
+
+What's new in Sudo 1.8.9p4?
+
+ * Fixed a bug where sudo could consume large amounts of CPU while
+   the command was running when I/O logging is not enabled.  Bug #631
+
+ * Fixed a bug where sudo would exit with an error when the debug
+   level is set to util@debug or all@debug and I/O logging is not
+   enabled.  The command would continue runnning after sudo exited.
+
+What's new in Sudo 1.8.9p3?
+
+ * Fixed a bug introduced in sudo 1.8.9 that prevented the tty name
+   from being resolved properly on Linux systems.  Bug #630.
+
+What's new in Sudo 1.8.9p2?
+
+ * Updated config.guess, config.sub and libtool to support the ppc64le
+   architecture (IBM PowerPC Little Endian).
+
+What's new in Sudo 1.8.9p1?
+
+ * Fixed a problem with gcc 4.8's handling of bit fields that could
+   lead to the noexec flag being enabled even when it was not
+   explicitly set.
+
+What's new in Sudo 1.8.9?
+
+ * Reworked sudo's main event loop to use a simple event subsystem
+   using poll(2) or select(2) as the back end.
+
+ * It is now possible to statically compile the sudoers plugin into
+   the sudo binary without disabling shared library support.  The
+   sudo.conf file may still be used to configure other plugins.
+
+ * Sudo can now be compiled again with a C preprocessor that does
+   not support variadic macros.
+
+ * Visudo can now export a sudoers file in JSON format using the
+   new -x flag.
+
+ * The locale is now set correctly again for visudo and sudoreplay.
+
+ * The plugin API has been extended to allow the plugin to exclude
+   specific file descriptors from the "closefrom" range.
+
+ * There is now a workaround for a Solaris-specific problem where
+   NOEXEC was overriding traditional root DAC behavior.
+
+ * Add user netgroup filtering for SSSD. Previously, rules for
+   a netgroup were applied to all even when they did not belong
+   to the specified netgroup.
+
+ * On systems with BSD login classes, if the user specified a group
+   (not a user) to run the command as, it was possible to specify
+   a different login class even when the command was not run as the
+   super user.
+
+ * The closefrom() emulation on Mac OS X now uses /dev/fd if possible.
+
+ * Fixed a bug where sudoedit would not update the original file
+   from the temporary when PAM or I/O logging is not enabled.
+
+ * When recycling I/O logs, the log files are now truncated properly.
+
+ * Fixes bugs #617, #621, #622, #623, #624, #625, #626
+
+What's new in Sudo 1.8.8?
+
+ * Removed a warning on PAM systems with stacked auth modules
+   where the first module on the stack does not succeed.
+
+ * Sudo, sudoreplay and visudo now support GNU-style long options.
+
+ * The -h (--host) option may now be used to specify a host name.
+   This is currently only used by the sudoers plugin in conjunction
+   with the -l (--list) option.
+
+ * Program usage messages and manual SYNOPSIS sections have been
+   simplified.
+
+ * Sudo's LDAP SASL support now works properly with Kerberos.
+   Previously, the SASL library was unable to locate the user's
+   credential cache.
+
+ * It is now possible to set the nproc resource limit to unlimited
+   via pam_limits on Linux (bug #565).
+
+ * New "pam_service" and "pam_login_service" sudoers options
+   that can be used to specify the PAM service name to use.
+
+ * New "pam_session" and "pam_setcred" sudoers options that
+   can be used to disable PAM session and credential support.
+
+ * The sudoers plugin now properly supports UIDs and GIDs
+   that are larger than 0x7fffffff on 32-bit platforms.
+
+ * Fixed a visudo bug introduced in sudo 1.8.7 where per-group
+   Defaults entries would cause an internal error.
+
+ * If the "tty_tickets" sudoers option is enabled (the default),
+   but there is no tty present, sudo will now use a ticket file
+   based on the parent process ID.  This makes it possible to support
+   the normal timeout behavior for the session.
+
+ * Fixed a problem running commands that change their process
+   group and then attempt to change the terminal settings when not
+   running the command in a pseudo-terminal.  Previously, the process
+   would receive SIGTTOU since it was effectively a background
+   process.  Sudo will now grant the child the controlling tty and
+   continue it when this happens.
+
+ * The "closefrom_override" sudoers option may now be used in
+   a command-specified Defaults entry (bug #610).
+
+ * Sudo's BSM audit support now works on Solaris 11.
+
+ * Brazilian Portuguese translation for sudo and sudoers from
+   translationproject.org.
+
+ * Czech translation for sudo from translationproject.org.
+
+ * French translation for sudo from translationproject.org.
+
+ * Sudo's noexec support on Mac OS X 10.4 and above now uses dynamic
+   symbol interposition instead of setting DYLD_FORCE_FLAT_NAMESPACE=1
+   which causes issues with some programs.
+
+ * Fixed visudo's -q (--quiet) flag, broken in sudo 1.8.6.
+
+ * Root may no longer change its SELinux role without entering
+   a password.
+
+ * Fixed a bug introduced in Sudo 1.8.7 where the indexes written
+   to the I/O log timing file are two greater than they should be.
+   Sudoreplay now contains a work-around to parse those files.
+
+ * In sudoreplay's list mode, the "this" qualifier in "fromdate"
+   or "todate" expressions now behaves more sensibly.  Previously,
+   it would often match a date that was "one more" than expected.
+   For example, "this week" now matches the current week instead
+   of the following week.
+
+What's new in Sudo 1.8.7?
+
+ * The non-Unix group plugin is now supported when sudoers data
+   is stored in LDAP.
+
+ * Sudo now uses a workaround for a locale bug on Solaris 11.0
+   that prevents setuid programs like sudo from fully using locales.
+
+ * User messages are now always displayed in the user's locale,
+   even when the same message is being logged or mailed in a
+   different locale.
+
+ * Log files created by sudo now explicitly have the group set
+   to group ID 0 rather than relying on BSD group semantics (which
+   may not be the default).
+
+ * A new "exec_background" sudoers option can be used to initially
+   run the command without read access to the terminal when running
+   a command in a pseudo-tty.  If the command tries to read from
+   the terminal it will be stopped by the kernel (via SIGTTIN or
+   SIGTTOU) and sudo will immediately restart it as the foreground
+   process (if possible).  This allows sudo to only pass terminal
+   input to the program if the program actually is expecting it.
+   Unfortunately, a few poorly-behaved programs (like "su" on most
+   Linux systems) do not handle SIGTTIN and SIGTTOU properly.
+
+ * Sudo now uses an efficient group query to get all the groups
+   for a user instead of iterating over every record in the group
+   database on HP-UX and Solaris.
+
+ * Sudo now produces better error messages when there is an error
+   in the sudo.conf file.
+
+ * Two new settings have been added to sudo.conf to give the admin
+   better control of how group database queries are performed.  The
+   "group_source" specifies how the group list for a user will be
+   determined.  Legal values are "static" (use the kernel groups
+   list), "dynamic" (perform a group database query) and "adaptive"
+   (only perform a group database query if the kernel list is full).
+   The "max_groups" setting specifies the maximum number of groups
+   a user may belong to when performing a group database query.
+
+ * The sudo.conf file now supports line continuation by using a
+   backslash as the last character on the line.
+
+ * There is now a standalone sudo.conf manual page.
+
+ * Sudo now stores its libexec files in a "sudo" sub-directory instead
+   of in libexec itself. For backwards compatibility, if the plugin
+   is not found in the default plugin directory, sudo will check
+   the parent directory if the default directory ends in "/sudo".
+
+ * The sudoers I/O logging plugin now logs the terminal size.
+
+ * A new sudoers option "maxseq" can be used to limit the number of
+   I/O log entries that are stored.
+
+ * The "system_group" and "group_file" sudoers group provider plugins
+   are now installed by default.
+
+ * The list output (sudo -l) output from the sudoers plugin is now
+   less ambiguous when an entry includes different runas users.
+   The long list output (sudo -ll) for file-based sudoers is now
+   more consistent with the format of LDAP-based sudoers.
+
+ * A uid may now be used in the sudoRunAsUser attributes for LDAP
+   sudoers.
+
+ * Minor plugin API change: the close and version functions are now
+   optional.  If the policy plugin does not provide a close function
+   and the command is not being run in a new pseudo-tty, sudo may
+   now execute the command directly instead of in a child process.
+
+ * A new sudoers option "pam_session" can be used to disable sudo's
+   PAM session support.
+
+ * On HP-UX systems, sudo will now use the pstat() function to
+   determine the tty instead of ttyname().
+
+ * Turkish translation for sudo and sudoers from translationproject.org.
+
+ * Dutch translation for sudo and sudoers from translationproject.org.
+
+ * Tivoli Directory Server client libraries may now be used with
+   HP-UX where libibmldap has a hidden dependency on libCsup.
+
+ * The sudoers plugin will now ignore invalid domain names when
+   checking netgroup membership.  Most Linux systems use the string
+   "(none)" for the NIS-style domain name instead of an empty string.
+
+ * New support for specifying a SHA-2 digest along with the command
+   in sudoers.  Supported hash types are sha224, sha256, sha384 and
+   sha512.  See the description of Digest_Spec in the sudoers manual
+   or the description of sudoCommand in the sudoers.ldap manual for
+   details.
+
+ * The paths to ldap.conf and ldap.secret may now be specified as
+   arguments to the sudoers plugin in the sudo.conf file.
+
+ * Fixed potential false positives in visudo's alias cycle detection.
+
+ * Fixed a problem where the time stamp file was being treated
+   as out of date on Linux systems where the change time on the
+   pseudo-tty device node can change after it is allocated.
+
+ * Sudo now only builds Position Independent Executables (PIE)
+   by default on Linux systems and verifies that a trivial test
+   program builds and runs.
+
+ * On Solaris 11.1 and higher, sudo binaries will now have the
+   ASLR tag enabled if supported by the linker.
+
+What's new in Sudo 1.8.6p8?
+
+ * Terminal detection now works properly on 64-bit AIX kernels.
+   This was broken by the removal of the ttyname() fallback in Sudo
+   1.8.6p6.  Sudo is now able to map an AIX 64-bit device number
+   to the corresponding device file in /dev.
+
+ * Sudo now checks for crypt() returning NULL when performing
+   passwd-based authentication.
+
+What's new in Sudo 1.8.6p7?
+
+ * A time stamp file with the date set to the epoch by "sudo -k"
+   is now completely ignored regardless of what the local clock is
+   set to.  Previously, if the local clock was set to a value between
+   the epoch and the time stamp timeout value, a time stamp reset
+   by "sudo -k" would be considered current.
+
+ * The tty-specific time stamp file now includes the session ID
+   of the sudo process that created it.  If a process with the same
+   tty but a different session ID runs sudo, the user will now be
+   prompted for a password (assuming authentication is required for
+   the command).
+
+What's new in Sudo 1.8.6p6?
+
+ * On systems where the controlling tty can be determined via /proc
+   or sysctl(), sudo will no longer fall back to using ttyname()
+   if the process has no controlling tty.  This prevents sudo from
+   using a non-controlling tty for logging and time stamp purposes.
+
+What's new in Sudo 1.8.6p5?
+
+ * Fixed a potential crash in visudo's alias cycle detection.
+
+ * Improved performance on Solaris when retrieving the group list
+   for the target user.  On systems with a large number of groups
+   where the group database is not local (NIS, LDAP, AD), fetching
+   the group list could take a minute or more.
+
+What's new in Sudo 1.8.6p4?
+
+ * The -fstack-protector is now used when linking visudo, sudoreplay
+   and testsudoers.
+
+ * Avoid building PIE binaries on FreeBSD/ia64 as they don't run
+   properly.
+
+ * Fixed a crash in visudo strict mode when an unknown Defaults
+   setting is encountered.
+
+ * Do not inform the user that the command was not permitted by the
+   policy if they do not successfully authenticate. This is a
+   regression introduced in sudo 1.8.6.
+
+ * Allow sudo to be build with sss support without also including
+   ldap support.
+
+ * Fix running commands that need the terminal in the background
+   when I/O logging is enabled. E.g. "sudo vi &". When the command
+   is foregrounded, it will now resume properly.
+
 What's new in Sudo 1.8.6p3?
 
  * Fixed post-processing of the man pages on systems with legacy
@@ -53,7 +466,7 @@ What's new in Sudo 1.8.6?
    ldap.conf options.  A new ldap.conf option, TLS_KEYPW can be
    used to specify a password to decrypt the key database.
 
- * When constructing a time filter for use with LDAP sudoNotBefore    
+ * When constructing a time filter for use with LDAP sudoNotBefore
    and sudoNotAfter attributes, the current time now includes tenths
    of a second.  This fixes a problem with timed entries on Active
    Directory.
@@ -319,7 +732,7 @@ What's new in Sudo 1.8.3p1?
 
  * Fixed a crash in the monitor process on Solaris when NOPASSWD
    was specified or when authentication was disabled.
- 
+
  * Fixed matching of a Runas_Alias in the group section of a
    Runas_Spec.
 

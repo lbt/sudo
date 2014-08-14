@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004-2005, 2007, 2010-2011
+ * Copyright (c) 2004-2005, 2007, 2010-2011, 2013
  *	Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -17,10 +17,12 @@
 
 #include <config.h>
 
+#if !defined(HAVE_UTIMES) || (!defined(HAVE_FUTIMES) && !defined(HAVE_FUTIMESAT))
+
 #include <sys/types.h>
 #include <sys/time.h>
 #include <stdio.h>
-#if TIME_WITH_SYS_TIME
+#ifdef TIME_WITH_SYS_TIME
 # include <time.h>
 #endif
 
@@ -67,3 +69,5 @@ futimes(int fd, const struct timeval *times)
 	return futime(fd, NULL);
 }
 #endif /* HAVE_FUTIME */
+
+#endif /* !HAVE_UTIMES || (!HAVE_FUTIMES && !HAVE_FUTIMESAT) */

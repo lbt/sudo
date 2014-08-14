@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2011-2013 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -35,9 +35,6 @@
 #ifdef HAVE_STRINGS_H
 # include <strings.h>
 #endif /* HAVE_STRINGS_H */
-#ifdef HAVE_SETLOCALE
-# include <locale.h>
-#endif
 #include <pwd.h>
 #include <grp.h>
 #include <time.h>
@@ -50,14 +47,15 @@
 
 struct sudo_user sudo_user;
 struct passwd *list_pw;
-sudo_conv_t sudo_conv;		/* NULL in non-plugin */
 
 static char sessid[7];
+
+__dso_public int main(int argc, char *argv[]);
 
 static void
 usage(void)
 {
-    fprintf(stderr, "usage: check_iolog_path datafile\n");
+    fprintf(stderr, "usage: %s datafile\n", getprogname());
     exit(1);
 }
 
@@ -76,6 +74,8 @@ do_check(char *dir_in, char *file_in, char *tdir_out, char *tfile_out)
      */
     time(&now);
     timeptr = localtime(&now);
+    if (timeptr == NULL)
+	fatalx("localtime returned NULL");
     strftime(dir_out, sizeof(dir_out), tdir_out, timeptr);
     strftime(file_out, sizeof(file_out), tfile_out, timeptr);
 
@@ -104,20 +104,19 @@ main(int argc, char *argv[])
     char line[2048];
     char *file_in = NULL, *file_out = NULL;
     char *dir_in = NULL, *dir_out = NULL;
+    const char *errstr;
     int state = 0;
     int errors = 0;
     int tests = 0;
 
-#if !defined(HAVE_GETPROGNAME) && !defined(HAVE___PROGNAME)
-    setprogname(argc > 0 ? argv[0] : "check_iolog_path");
-#endif
+    initprogname(argc > 0 ? argv[0] : "check_iolog_path");
 
     if (argc != 2)
 	usage();
 
     fp = fopen(argv[1], "r");
     if (fp == NULL)
-	errorx(1, "unable to open %s", argv[1]);
+	fatalx("unable to open %s", argv[1]);
 
     memset(&pw, 0, sizeof(pw));
     memset(&rpw, 0, sizeof(rpw));
@@ -153,7 +152,9 @@ main(int argc, char *argv[])
 	    user_name = strdup(line);
 	    break;
 	case 2:
-	    user_gid = atoi(line);
+	    user_gid = (gid_t)atoid(line, NULL, NULL, &errstr);
+	    if (errstr != NULL)
+		fatalx("group ID %s: %s", line, errstr);
 	    break;
 	case 3:
 	    if (runas_pw->pw_name != NULL)
@@ -161,7 +162,9 @@ main(int argc, char *argv[])
 	    runas_pw->pw_name = strdup(line);
 	    break;
 	case 4:
-	    runas_pw->pw_gid = atoi(line);
+	    runas_pw->pw_gid = (gid_t)atoid(line, NULL, NULL, &errstr);
+	    if (errstr != NULL)
+		fatalx("group ID %s: %s", line, errstr);
 	    break;
 	case 5:
 	    user_shost = strdup(line);
@@ -186,7 +189,7 @@ main(int argc, char *argv[])
 	    tests++;
 	    break;
 	default:
-	    errorx(1, "internal error, invalid state %d", state);
+	    fatalx("internal error, invalid state %d", state);
 	}
 	state = (state + 1) % MAX_STATE;
     }
@@ -203,10 +206,4 @@ main(int argc, char *argv[])
 void io_nextid(char *iolog_dir, char *fallback, char id[7])
 {
     memcpy(id, sessid, sizeof(sessid));
-}
-
-void
-cleanup(int gotsig)
-{
-    return;
 }

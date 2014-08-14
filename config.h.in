@@ -1,4 +1,4 @@
-/* config.h.in.  Generated from configure.in by autoheader.  */
+/* config.h.in.  Generated from configure.ac by autoheader.  */
 
 #ifndef _SUDO_CONFIG_H
 #define _SUDO_CONFIG_H
@@ -70,6 +70,9 @@
 /* Define to 1 to enable BSM audit support. */
 #undef HAVE_BSM_AUDIT
 
+/* Define to 1 if you have the `clock_gettime' function. */
+#undef HAVE_CLOCK_GETTIME
+
 /* Define to 1 if you have the `closefrom' function. */
 #undef HAVE_CLOSEFROM
 
@@ -134,8 +137,23 @@
 /* Define to 1 if the compiler supports the __visibility__ attribute. */
 #undef HAVE_DSO_VISIBILITY
 
+/* Define to 1 if you have the <endian.h> header file. */
+#undef HAVE_ENDIAN_H
+
+/* Define to 1 if you have the `exect' function. */
+#undef HAVE_EXECT
+
+/* Define to 1 if you have the `execvP' function. */
+#undef HAVE_EXECVP
+
+/* Define to 1 if you have the `execvpe' function. */
+#undef HAVE_EXECVPE
+
 /* Define to 1 if your system has the F_CLOSEM fcntl. */
 #undef HAVE_FCNTL_CLOSEM
+
+/* Define to 1 if you have the `fexecve' function. */
+#undef HAVE_FEXECVE
 
 /* Define to 1 if you have the `fgetln' function. */
 #undef HAVE_FGETLN
@@ -168,7 +186,7 @@
 #undef HAVE_GETADDRINFO
 
 /* Define to 1 if you have the `getauthuid' function. (ULTRIX 4.x shadow
-   passwords) */
+   passwords). */
 #undef HAVE_GETAUTHUID
 
 /* Define to 1 if you have the `getcwd' function. */
@@ -192,26 +210,29 @@
 /* Define to 1 if you have the `getline' function. */
 #undef HAVE_GETLINE
 
+/* Define to 1 if you have the `getopt_long' function. */
+#undef HAVE_GETOPT_LONG
+
 /* Define to 1 if you have the `getprogname' function. */
 #undef HAVE_GETPROGNAME
 
 /* Define to 1 if you have the `getprpwnam' function. (SecureWare-style shadow
-   passwords) */
+   passwords). */
 #undef HAVE_GETPRPWNAM
 
 /* Define to 1 if you have the `getpwanam' function. (SunOS 4.x shadow
-   passwords) */
+   passwords). */
 #undef HAVE_GETPWANAM
 
 /* Define to 1 if you have the `getresuid' function. */
 #undef HAVE_GETRESUID
 
 /* Define to 1 if you have the `getspnam' function (SVR4-style shadow
-   passwords) */
+   passwords). */
 #undef HAVE_GETSPNAM
 
 /* Define to 1 if you have the `getspwuid' function. (HP-UX <= 9.X shadow
-   passwords) */
+   passwords). */
 #undef HAVE_GETSPWUID
 
 /* Define to 1 if you have the `getttyent' function. */
@@ -241,6 +262,9 @@
 /* Define to 1 if your Kerberos is Heimdal. */
 #undef HAVE_HEIMDAL
 
+/* Define to 1 if you have the `inet_pton' function. */
+#undef HAVE_INET_PTON
+
 /* Define to 1 if you have the `initprivs' function. */
 #undef HAVE_INITPRIVS
 
@@ -254,11 +278,11 @@
 #undef HAVE_ISBLANK
 
 /* Define to 1 if you have the `iscomsec' function. (HP-UX >= 10.x check for
-   shadow enabled) */
+   shadow enabled). */
 #undef HAVE_ISCOMSEC
 
 /* Define to 1 if you have the `issecure' function. (SunOS 4.x check for
-   shadow enabled) */
+   shadow enabled). */
 #undef HAVE_ISSECURE
 
 /* Define to 1 if you use Kerberos V. */
@@ -280,7 +304,7 @@
 /* Define to 1 if you have the `krb5_verify_user' function. */
 #undef HAVE_KRB5_VERIFY_USER
 
-/* Define to 1 if your LDAP needs <lber.h>. (OpenLDAP does not) */
+/* Define to 1 if your LDAP needs <lber.h>. (OpenLDAP does not). */
 #undef HAVE_LBER_H
 
 /* Define to 1 if you use LDAP for sudoers. */
@@ -346,11 +370,14 @@
 /* Define to 1 if you have the <login_cap.h> header file. */
 #undef HAVE_LOGIN_CAP_H
 
-/* Define to 1 if the system has the type `long long int'. */
+/* Define to 1 if the system has the type 'long long int'. */
 #undef HAVE_LONG_LONG_INT
 
 /* Define to 1 if you have the `lrand48' function. */
 #undef HAVE_LRAND48
+
+/* Define to 1 if you have the <machine/endian.h> header file. */
+#undef HAVE_MACHINE_ENDIAN_H
 
 /* Define to 1 if you have the <maillock.h> header file. */
 #undef HAVE_MAILLOCK_H
@@ -358,14 +385,14 @@
 /* Define to 1 if you have the <malloc.h> header file. */
 #undef HAVE_MALLOC_H
 
-/* Define to 1 if you have the `mbr_check_membership' function. */
-#undef HAVE_MBR_CHECK_MEMBERSHIP
-
 /* Define to 1 if you have the <memory.h> header file. */
 #undef HAVE_MEMORY_H
 
 /* Define to 1 if you have the `memrchr' function. */
 #undef HAVE_MEMRCHR
+
+/* Define to 1 if you have the `memset_s' function. */
+#undef HAVE_MEMSET_S
 
 /* Define to 1 if you have the `mkdtemp' function. */
 #undef HAVE_MKDTEMP
@@ -375,9 +402,6 @@
 
 /* Define to 1 if you have the <mps/ldap_ssl.h> header file. */
 #undef HAVE_MPS_LDAP_SSL_H
-
-/* Define to 1 if you have the `nanosleep' function. */
-#undef HAVE_NANOSLEEP
 
 /* Define to 1 if you have the <ndir.h> header file, and it defines `DIR'. */
 #undef HAVE_NDIR_H
@@ -391,11 +415,20 @@
 /* Define to 1 if you have the `nl_langinfo' function. */
 #undef HAVE_NL_LANGINFO
 
+/* Define to 1 if you have the <nss_dbdefs.h> header file. */
+#undef HAVE_NSS_DBDEFS_H
+
+/* Define to 1 if you have the `nss_search' function. */
+#undef HAVE_NSS_SEARCH
+
 /* Define to 1 if you have the `openpty' function. */
 #undef HAVE_OPENPTY
 
 /* Define to 1 if you use NRL OPIE. */
 #undef HAVE_OPIE
+
+/* Define to 1 if you have the `optreset' symbol. */
+#undef HAVE_OPTRESET
 
 /* Define to 1 if you use PAM authentication. */
 #undef HAVE_PAM
@@ -412,8 +445,17 @@
 /* Define to 1 if you have the <paths.h> header file. */
 #undef HAVE_PATHS_H
 
+/* Define to 1 if you have the `poll' function. */
+#undef HAVE_POLL
+
 /* Define to 1 if you have the `posix_openpt' function. */
 #undef HAVE_POSIX_OPENPT
+
+/* Define to 1 if you have the `posix_spawn' function. */
+#undef HAVE_POSIX_SPAWN
+
+/* Define to 1 if you have the `posix_spawnp' function. */
+#undef HAVE_POSIX_SPAWNP
 
 /* Define to 1 if you have the `priv_set' function. */
 #undef HAVE_PRIV_SET
@@ -423,6 +465,9 @@
 
 /* Define to 1 if you have the <project.h> header file. */
 #undef HAVE_PROJECT_H
+
+/* Define to 1 if you have the `pstat_getproc' function. */
+#undef HAVE_PSTAT_GETPROC
 
 /* Define to 1 if you have the <pty.h> header file. */
 #undef HAVE_PTY_H
@@ -440,7 +485,7 @@
 #undef HAVE_REVOKE
 
 /* Define to 1 if the skeychallenge() function is RFC1938-compliant and takes
-   4 arguments */
+   4 arguments. */
 #undef HAVE_RFC1938_SKEYCHALLENGE
 
 /* Define to 1 if you have the <sasl.h> header file. */
@@ -469,9 +514,6 @@
 
 /* Define to 1 if you have the `setkeycreatecon' function. */
 #undef HAVE_SETKEYCREATECON
-
-/* Define to 1 if you have the `setlocale' function. */
-#undef HAVE_SETLOCALE
 
 /* Define to 1 if you have the `setresuid' function. */
 #undef HAVE_SETRESUID
@@ -542,6 +584,12 @@
 /* Define to 1 if you have the `strsignal' function. */
 #undef HAVE_STRSIGNAL
 
+/* Define to 1 if you have the `strtoll' function. */
+#undef HAVE_STRTOLL
+
+/* Define to 1 if you have the `strtonum' function. */
+#undef HAVE_STRTONUM
+
 /* Define to 1 if `d_type' is a member of `struct dirent'. */
 #undef HAVE_STRUCT_DIRENT_D_TYPE
 
@@ -563,7 +611,10 @@
 /* Define to 1 if `pr_ttydev' is a member of `struct psinfo'. */
 #undef HAVE_STRUCT_PSINFO_PR_TTYDEV
 
-/* Define if your struct sockadr has an sa_len field. */
+/* Define if your struct sockaddr_in has a sin_len field. */
+#undef HAVE_STRUCT_SOCKADDR_IN_SIN_LEN
+
+/* Define if your struct sockaddr has an sa_len field. */
 #undef HAVE_STRUCT_SOCKADDR_SA_LEN
 
 /* Define to 1 if the system has the type `struct timespec'. */
@@ -614,13 +665,13 @@
 /* Define to 1 if `ut_user' is a member of `struct utmp'. */
 #undef HAVE_STRUCT_UTMP_UT_USER
 
-/* Define to 1 if your struct stat has an st_mtim member */
+/* Define to 1 if your struct stat has an st_mtim member. */
 #undef HAVE_ST_MTIM
 
-/* Define to 1 if your struct stat has an st_mtimespec member */
+/* Define to 1 if your struct stat has an st_mtimespec member. */
 #undef HAVE_ST_MTIMESPEC
 
-/* Define to 1 if your struct stat uses an st__tim union */
+/* Define to 1 if your struct stat uses an st__tim union. */
 #undef HAVE_ST__TIM
 
 /* Define to 1 if you have the `sysconf' function. */
@@ -635,6 +686,9 @@
 /* Define to 1 if you have the <sys/dir.h> header file, and it defines `DIR'.
    */
 #undef HAVE_SYS_DIR_H
+
+/* Define to 1 if you have the <sys/endian.h> header file. */
+#undef HAVE_SYS_ENDIAN_H
 
 /* Define to 1 if you have the <sys/ndir.h> header file, and it defines `DIR'.
    */
@@ -676,6 +730,9 @@
 /* Define to 1 if you have the `unsetenv' function. */
 #undef HAVE_UNSETENV
 
+/* Define to 1 if the system has the type 'unsigned long long int'. */
+#undef HAVE_UNSIGNED_LONG_LONG_INT
+
 /* Define to 1 if you have the <util.h> header file. */
 #undef HAVE_UTIL_H
 
@@ -700,17 +757,98 @@
 /* Define to 1 if the system has the type `_Bool'. */
 #undef HAVE__BOOL
 
+/* Define to 1 if you have the `_execl' function. */
+#undef HAVE__EXECL
+
+/* Define to 1 if you have the `_execle' function. */
+#undef HAVE__EXECLE
+
+/* Define to 1 if you have the `_execlp' function. */
+#undef HAVE__EXECLP
+
+/* Define to 1 if you have the `_exect' function. */
+#undef HAVE__EXECT
+
+/* Define to 1 if you have the `_execv' function. */
+#undef HAVE__EXECV
+
+/* Define to 1 if you have the `_execve' function. */
+#undef HAVE__EXECVE
+
+/* Define to 1 if you have the `_execvP' function. */
+#undef HAVE__EXECVP
+
+/* Define to 1 if you have the `_execvpe' function. */
+#undef HAVE__EXECVPE
+
+/* Define to 1 if you have the `_fexecve' function. */
+#undef HAVE__FEXECVE
+
 /* Define to 1 if you have the `_getpty' function. */
 #undef HAVE__GETPTY
 
 /* Define to 1 if you have the `_innetgr' function. */
 #undef HAVE__INNETGR
 
+/* Define to 1 if you have the `_nss_initf_group' function. */
+#undef HAVE__NSS_INITF_GROUP
+
+/* Define to 1 if you have the `_nss_XbyY_buf_alloc' function. */
+#undef HAVE__NSS_XBYY_BUF_ALLOC
+
+/* Define to 1 if you have the `_posix_spawn' function. */
+#undef HAVE__POSIX_SPAWN
+
+/* Define to 1 if you have the `_posix_spawnp' function. */
+#undef HAVE__POSIX_SPAWNP
+
 /* Define to 1 if you have the `_ttyname_dev' function. */
 #undef HAVE__TTYNAME_DEV
 
+/* Define to 1 if you have the `__execl' function. */
+#undef HAVE___EXECL
+
+/* Define to 1 if you have the `__execle' function. */
+#undef HAVE___EXECLE
+
+/* Define to 1 if you have the `__execlp' function. */
+#undef HAVE___EXECLP
+
+/* Define to 1 if you have the `__exect' function. */
+#undef HAVE___EXECT
+
+/* Define to 1 if you have the `__execv' function. */
+#undef HAVE___EXECV
+
+/* Define to 1 if you have the `__execve' function. */
+#undef HAVE___EXECVE
+
+/* Define to 1 if you have the `__execvP' function. */
+#undef HAVE___EXECVP
+
+/* Define to 1 if you have the `__execvpe' function. */
+#undef HAVE___EXECVPE
+
+/* Define to 1 if you have the `__fexecve' function. */
+#undef HAVE___FEXECVE
+
 /* Define to 1 if the compiler supports the C99 __func__ variable. */
 #undef HAVE___FUNC__
+
+/* Define to 1 if you have dyld with __interpose attribute support. */
+#undef HAVE___INTERPOSE
+
+/* Define to 1 if you have the `__nss_initf_group' function. */
+#undef HAVE___NSS_INITF_GROUP
+
+/* Define to 1 if you have the `__nss_XbyY_buf_alloc' function. */
+#undef HAVE___NSS_XBYY_BUF_ALLOC
+
+/* Define to 1 if you have the `__posix_spawn' function. */
+#undef HAVE___POSIX_SPAWN
+
+/* Define to 1 if you have the `__posix_spawnp' function. */
+#undef HAVE___POSIX_SPAWNP
 
 /* Define to 1 if your crt0.o defines the __progname symbol for you. */
 #undef HAVE___PROGNAME
@@ -718,7 +856,7 @@
 /* Define to 1 if you want the hostname to be entered into the log file. */
 #undef HOST_IN_LOG
 
-/* Define to 1 if you want to ignore '.' and empty PATH elements */
+/* Define to 1 if you want to ignore '.' and empty PATH elements. */
 #undef IGNORE_DOT_PATH
 
 /* The message given when a bad password is entered. */
@@ -733,8 +871,7 @@
 /* Define to 1 if you want a two line OTP (S/Key or OPIE) prompt. */
 #undef LONG_OTP_PROMPT
 
-/* Define to the sub-directory in which libtool stores uninstalled libraries.
-   */
+/* Define to the sub-directory where libtool stores uninstalled libraries. */
 #undef LT_OBJDIR
 
 /* The subject of the mail sent by sudo to the MAILTO user/address. */
@@ -765,7 +902,7 @@
    sudo. */
 #undef NO_LECTURE
 
-/* Define to 1 if you don't want to use sudo's PAM session support */
+/* Define to 1 if you don't want to use sudo's PAM session support. */
 #undef NO_PAM_SESSION
 
 /* Define to avoid runing the mailer as root. */
@@ -776,6 +913,9 @@
 
 /* Define to 1 if you want a single ticket file instead of per-tty files. */
 #undef NO_TTY_TICKETS
+
+/* Define if your C preprocessor does not support variadic macros. */
+#undef NO_VARIADIC_MACROS
 
 /* Define to the address where bug reports for this package should be sent. */
 #undef PACKAGE_BUGREPORT
@@ -804,6 +944,9 @@
 /* Define to 1 to replace politically incorrect insults with less offensive
    ones. */
 #undef PC_INSULTS
+
+/* Enable replacement (v)snprintf if system (v)snprintf is broken. */
+#undef PREFER_PORTABLE_SNPRINTF
 
 /* The syslog priority sudo will use for unsuccessful attempts/errors. */
 #undef PRI_FAILURE
@@ -852,17 +995,18 @@
 /* The size of `long int', as computed by sizeof. */
 #undef SIZEOF_LONG_INT
 
+/* Define to 1 to compile the sudoers plugin statically into the sudo binary.
+   */
+#undef STATIC_SUDOERS_PLUGIN
+
 /* Define to 1 if you have the ANSI C header files. */
 #undef STDC_HEADERS
 
 /* Define to 1 if the code in interfaces.c does not compile for you. */
 #undef STUB_LOAD_INTERFACES
 
-/* The name of the sudoers plugin, including extension. */
-#undef SUDOERS_PLUGIN
-
 /* An instance string to append to the username (separated by a slash) for
-   Kerberos V authentication */
+   Kerberos V authentication. */
 #undef SUDO_KRB5_INSTANCE
 
 /* The umask that the sudo-run prog should use. */
@@ -898,19 +1042,23 @@
 /* Define to avoid using the passwd/shadow file for authentication. */
 #undef WITHOUT_PASSWD
 
+/* Enable large inode numbers on Mac OS X 10.5.  */
+#ifndef _DARWIN_USE_64_BIT_INODE
+# define _DARWIN_USE_64_BIT_INODE 1
+#endif
+
 /* Number of bits in a file offset, on hosts where this is settable. */
 #undef _FILE_OFFSET_BITS
 
 /* Define for large files, on AIX-style hosts. */
 #undef _LARGE_FILES
 
-/* Define to __FUNCTION__ if your compiler support __FUNCTION__ but not
+/* Define to __FUNCTION__ if your compiler supports __FUNCTION__ but not
    __func__ */
 #undef __func__
 
-/* Define to `signed' or nothing if compiler does not support a signed type
-   qualifier. */
-#undef __signed
+/* Define to `int' if <time.h> does not define. */
+#undef clockid_t
 
 /* Define to empty if `const' does not conform to ANSI C. */
 #undef const
@@ -918,14 +1066,26 @@
 /* Define to `int' if <sys/types.h> does not define. */
 #undef dev_t
 
+/* Define to `int' if <sys/types.h> does not define. */
+#undef errno_t
+
 /* Define to `int' if <sys/types.h> doesn't define. */
 #undef gid_t
+
+/* Define to `unsigned int' if <sys/types.h> does not define. */
+#undef id_t
 
 /* Define to `unsigned int' if <sys/types.h> does not define. */
 #undef ino_t
 
 /* Define to `int' if <sys/types.h> does not define. */
 #undef mode_t
+
+/* Define to an OS-specific initialization function or `os_init_common'. */
+#undef os_init
+
+/* Define to `size_t' if <sys/types.h> does not define. */
+#undef rsize_t
 
 /* Define to `int' if <signal.h> does not define. */
 #undef sig_atomic_t
@@ -942,61 +1102,18 @@
 /* Define to `int' if <sys/types.h> doesn't define. */
 #undef uid_t
 
+/* Define to `unsigned int' if <sys/types.h> does not define. */
+#undef uint32_t
+
+/* Define to `unsigned long long' if <sys/types.h> does not define. */
+#undef uint64_t
+
+/* Define to `unsigned char' if <sys/types.h> does not define. */
+#undef uint8_t
+
 /* Define to empty if the keyword `volatile' does not work. Warning: valid
    code using `volatile' can become incorrect without. Disable with care. */
 #undef volatile
-
-/*
- * Macros to convert ctime and mtime into timevals.
- */
-#define timespec2timeval(_ts, _tv) do {					\
-    (_tv)->tv_sec = (_ts)->tv_sec;					\
-    (_tv)->tv_usec = (_ts)->tv_nsec / 1000;				\
-} while (0)
-
-#ifdef HAVE_ST_MTIM
-# ifdef HAVE_ST__TIM
-#  define ctim_get(_x, _y)	timespec2timeval(&(_x)->st_ctim.st__tim, (_y))
-#  define mtim_get(_x, _y)	timespec2timeval(&(_x)->st_mtim.st__tim, (_y))
-# else
-#  define ctim_get(_x, _y)	timespec2timeval(&(_x)->st_ctim, (_y))
-#  define mtim_get(_x, _y)	timespec2timeval(&(_x)->st_mtim, (_y))
-# endif
-#else
-# ifdef HAVE_ST_MTIMESPEC
-#  define ctim_get(_x, _y)	timespec2timeval(&(_x)->st_ctimespec, (_y))
-#  define mtim_get(_x, _y)	timespec2timeval(&(_x)->st_mtimespec, (_y))
-# else
-#  define ctim_get(_x, _y)	do { (_y)->tv_sec = (_x)->st_ctime; (_y)->tv_usec = 0; } while (0)
-#  define mtim_get(_x, _y)	do { (_y)->tv_sec = (_x)->st_mtime; (_y)->tv_usec = 0; } while (0)
-# endif /* HAVE_ST_MTIMESPEC */
-#endif /* HAVE_ST_MTIM */
-
-#ifdef __GNUC__
-# define ignore_result(x) do {						       \
-    __typeof__(x) y = (x);						       \
-    (void)y;								       \
-} while(0)
-#else
-# define ignore_result(x)	(void)(x)
-#endif
-
-/* Macros to set/clear/test flags. */
-#undef SET
-#define SET(t, f)	((t) |= (f))
-#undef CLR
-#define CLR(t, f)	((t) &= ~(f))
-#undef ISSET
-#define ISSET(t, f)     ((t) & (f))
-
-/* ANSI-style OS defs for HP-UX and ConvexOS. */
-#if defined(hpux) && !defined(__hpux)
-# define __hpux		1
-#endif /* hpux */
-
-#if defined(convex) && !defined(__convex__)
-# define __convex__	1
-#endif /* convex */
 
 /* BSD compatibility on some SVR4 systems. */
 #ifdef __svr4__

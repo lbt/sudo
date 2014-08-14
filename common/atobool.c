@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2010-2014 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -17,7 +17,6 @@
 #include <config.h>
 
 #include <sys/types.h>
-#include <sys/param.h>
 
 #include <stdio.h>
 #ifdef STDC_HEADERS
@@ -40,6 +39,7 @@
 
 #include "missing.h"
 #include "sudo_debug.h"
+#include "sudo_util.h"
 
 int
 atobool(const char *str)
@@ -50,34 +50,34 @@ atobool(const char *str)
 	case '0':
 	case '1':
 	    if (str[1] == '\0')
-		return *str - '0';
+		debug_return_int(*str - '0');
 	    break;
 	case 'y':
 	case 'Y':
 	    if (strcasecmp(str, "yes") == 0)
-		return 1;
+		debug_return_int(1);
 	    break;
 	case 't':
 	case 'T':
 	    if (strcasecmp(str, "true") == 0)
-		return 1;
+		debug_return_int(1);
 	    break;
 	case 'o':
 	case 'O':
 	    if (strcasecmp(str, "on") == 0)
-		return 1;
+		debug_return_int(1);
 	    if (strcasecmp(str, "off") == 0)
-		return 0;
+		debug_return_int(0);
 	    break;
 	case 'n':
 	case 'N':
 	    if (strcasecmp(str, "no") == 0)
-		return 0;
+		debug_return_int(0);
 	    break;
 	case 'f':
 	case 'F':
 	    if (strcasecmp(str, "false") == 0)
-		return 0;
+		debug_return_int(0);
 	    break;
     }
     debug_return_int(-1);

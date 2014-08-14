@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1993-1996, 1998-2005, 2007-2011
+ * Copyright (c) 1993-1996, 1998-2005, 2007-2014
  *	Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -19,8 +19,8 @@
  * Materiel Command, USAF, under agreement number F39502-99-1-0512.
  */
 
-#ifndef _SUDO_SUDOERS_H
-#define _SUDO_SUDOERS_H
+#ifndef _SUDOERS_SUDOERS_H
+#define _SUDOERS_SUDOERS_H
 
 #include <limits.h>
 #ifdef HAVE_STDBOOL_H
@@ -29,20 +29,21 @@
 # include "compat/stdbool.h"
 #endif /* HAVE_STDBOOL_H */
 
+#define DEFAULT_TEXT_DOMAIN	"sudoers"
+#include "gettext.h"		/* must be included before missing.h */
+
 #include <pathnames.h>
 #include "missing.h"
-#include "error.h"
+#include "fatal.h"
 #include "alloc.h"
-#include "list.h"
+#include "queue.h"
 #include "fileops.h"
 #include "defaults.h"
 #include "logging.h"
 #include "sudo_nss.h"
 #include "sudo_plugin.h"
 #include "sudo_debug.h"
-
-#define DEFAULT_TEXT_DOMAIN	"sudoers"
-#include "gettext.h"
+#include "sudo_util.h"
 
 /*
  * Password db and supplementary group IDs with associated group names.
@@ -68,6 +69,8 @@ struct sudo_user {
     char *ttypath;
     char *host;
     char *shost;
+    char *runhost;
+    char *srunhost;
     char *prompt;
     char *cmnd;
     char *cmnd_args;
@@ -85,7 +88,7 @@ struct sudo_user {
     char *privs;
     char *limitprivs;
 #endif
-    char *cwd;
+    const char *cwd;
     char *iolog_file;
     GETGROUPS_T *gids;
     int   ngids;
@@ -93,8 +96,11 @@ struct sudo_user {
     int   lines;
     int   cols;
     int   flags;
+    int   max_groups;
+    mode_t umask;
     uid_t uid;
     uid_t gid;
+    pid_t sid;
 };
 
 /*
@@ -171,8 +177,9 @@ struct sudo_user {
 #define user_name		(sudo_user.name)
 #define user_uid		(sudo_user.uid)
 #define user_gid		(sudo_user.gid)
+#define user_sid		(sudo_user.sid)
+#define user_umask		(sudo_user.umask)
 #define user_passwd		(sudo_user.pw->pw_passwd)
-#define user_uuid		(sudo_user.uuid)
 #define user_dir		(sudo_user.pw->pw_dir)
 #define user_gids		(sudo_user.gids)
 #define user_ngids		(sudo_user.ngids)
@@ -188,6 +195,8 @@ struct sudo_user {
 #define user_prompt		(sudo_user.prompt)
 #define user_host		(sudo_user.host)
 #define user_shost		(sudo_user.shost)
+#define user_runhost		(sudo_user.runhost)
+#define user_srunhost		(sudo_user.srunhost)
 #define user_ccname		(sudo_user.krb5_ccname)
 #define safe_cmnd		(sudo_user.cmnd_safe)
 #define login_class		(sudo_user.class_name)
@@ -200,18 +209,11 @@ struct sudo_user {
 #define	runas_limitprivs	(sudo_user.limitprivs)
 
 #ifdef __TANDEM
-# define ROOT_UID       65535
+# define ROOT_UID	65535
 #else
-# define ROOT_UID       0
+# define ROOT_UID	0
 #endif
-
-/*
- * We used to use the system definition of PASS_MAX or _PASSWD_LEN,
- * but that caused problems with various alternate authentication
- * methods.  So, we just define our own and assume that it is >= the
- * system max.
- */
-#define SUDO_PASS_MAX	256
+#define ROOT_GID	0
 
 struct lbuf;
 struct passwd;
@@ -221,7 +223,7 @@ struct timeval;
 /*
  * Function prototypes
  */
-#define YY_DECL int yylex(void)
+#define YY_DECL int sudoerslex(void)
 
 /* goodpath.c */
 bool sudo_goodpath(const char *, struct stat *);
@@ -230,11 +232,18 @@ bool sudo_goodpath(const char *, struct stat *);
 int find_path(char *, char **, struct stat *, char *, int);
 
 /* check.c */
-int check_user(int, int);
-void remove_timestamp(bool);
+int check_user(int validate, int mode);
 bool user_is_exempt(void);
 
+/* prompt.c */
+char *expand_prompt(const char *old_prompt, const char *auth_user);
+
+/* timestamp.c */
+void remove_timestamp(bool);
+bool set_lectured(void);
+
 /* sudo_auth.c */
+bool sudo_auth_needs_end_session(void);
 int verify_user(struct passwd *pw, char *prompt, int validated);
 int sudo_auth_begin_session(struct passwd *pw, char **user_env[]);
 int sudo_auth_end_session(struct passwd *pw);
@@ -259,14 +268,23 @@ void restore_perms(void);
 int pam_prep_user(struct passwd *);
 
 /* gram.y */
-int yyparse(void);
+int sudoersparse(void);
+extern char *login_style;
+extern const char *errorfile;
+extern int errorlineno;
+extern bool parse_error;
+extern bool sudoers_warnings;
 
 /* toke.l */
 YY_DECL;
+extern FILE *sudoersin;
 extern const char *sudoers_file;
+extern char *sudoers;
 extern mode_t sudoers_mode;
 extern uid_t sudoers_uid;
 extern gid_t sudoers_gid;
+extern int sudolineno;
+extern int last_token;
 
 /* defaults.c */
 void dump_defaults(void);
@@ -274,9 +292,6 @@ void dump_auth_methods(void);
 
 /* getspwuid.c */
 char *sudo_getepw(const struct passwd *);
-
-/* zero_bytes.c */
-void zero_bytes(volatile void *, size_t);
 
 /* sudo_nss.c */
 void display_privs(struct sudo_nss_list *, struct passwd *);
@@ -287,11 +302,11 @@ __dso_public struct group *sudo_getgrgid(gid_t);
 __dso_public struct group *sudo_getgrnam(const char *);
 __dso_public void sudo_gr_addref(struct group *);
 __dso_public void sudo_gr_delref(struct group *);
-bool user_in_group(struct passwd *, const char *);
+bool user_in_group(const struct passwd *, const char *);
 struct group *sudo_fakegrnam(const char *);
-struct group_list *sudo_get_grlist(struct passwd *pw);
+struct group_list *sudo_get_grlist(const struct passwd *pw);
 struct passwd *sudo_fakepwnam(const char *, gid_t);
-struct passwd *sudo_fakepwnamid(const char *user, uid_t uid, gid_t gid);
+struct passwd *sudo_mkpwent(const char *user, uid_t uid, gid_t gid, const char *home, const char *shell);
 struct passwd *sudo_getpwnam(const char *);
 struct passwd *sudo_getpwuid(uid_t);
 void sudo_endgrent(void);
@@ -301,6 +316,8 @@ void sudo_grlist_addref(struct group_list *);
 void sudo_grlist_delref(struct group_list *);
 void sudo_pw_addref(struct passwd *);
 void sudo_pw_delref(struct passwd *);
+void sudo_set_grlist(struct passwd *pw, char * const *groups,
+    char * const *gids);
 void sudo_setgrent(void);
 void sudo_setpwent(void);
 void sudo_setspent(void);
@@ -308,13 +325,11 @@ void sudo_setspent(void);
 /* timestr.c */
 char *get_timestr(time_t, int);
 
-/* atobool.c */
-int atobool(const char *str);
-
 /* boottime.c */
-int get_boottime(struct timeval *);
+bool get_boottime(struct timeval *);
 
 /* iolog.c */
+int io_set_max_sessid(const char *sessid);
 void io_nextid(char *iolog_dir, char *iolog_dir_fallback, char sessid[7]);
 
 /* iolog_path.c */
@@ -323,7 +338,7 @@ char *expand_iolog_path(const char *prefix, const char *dir, const char *file,
 
 /* env.c */
 char **env_get(void);
-void env_merge(char * const envp[], bool overwrite);
+void env_merge(char * const envp[]);
 void env_init(char * const envp[]);
 void init_envtables(void);
 void insert_env_vars(char * const envp[]);
@@ -338,26 +353,23 @@ int sudoers_hook_putenv(char *string, void *closure);
 int sudoers_hook_setenv(const char *name, const char *value, int overwrite, void *closure);
 int sudoers_hook_unsetenv(const char *name, void *closure);
 
-/* fmt_string.c */
-char *fmt_string(const char *, const char *);
-
 /* sudoers.c */
-void plugin_cleanup(int);
-void set_fqdn(void);
 FILE *open_sudoers(const char *, bool, bool *);
+int sudoers_policy_init(void *info, char * const envp[]);
+int sudoers_policy_main(int argc, char * const argv[], int pwflag, char *env_add[], void *closure);
+void sudoers_cleanup(void);
 
-/* aix.c */
-void aix_restoreauthdb(void);
-void aix_setauthdb(char *user);
+/* policy.c */
+int sudoers_policy_deserialize_info(void *v, char **runas_user, char **runas_group);
+int sudoers_policy_exec_setup(char *argv[], char *envp[], mode_t cmnd_umask, char *iolog_path, void *v);
+extern const char *path_ldap_conf;
+extern const char *path_ldap_secret;
 
 /* group_plugin.c */
 int group_plugin_load(char *plugin_info);
 void group_plugin_unload(void);
 int group_plugin_query(const char *user, const char *group,
     const struct passwd *pwd);
-
-/* setgroups.c */
-int sudo_setgroups(int ngids, const GETGROUPS_T *gids);
 
 #ifndef _SUDO_MAIN
 extern struct sudo_user sudo_user;
@@ -366,7 +378,6 @@ extern int long_list;
 extern int sudo_mode;
 extern uid_t timestamp_uid;
 extern sudo_conv_t sudo_conv;
-extern sudo_printf_t sudo_printf;
 #endif
 
-#endif /* _SUDO_SUDOERS_H */
+#endif /* _SUDOERS_SUDOERS_H */

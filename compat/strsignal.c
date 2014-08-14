@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2011 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2009-2013 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -16,15 +16,17 @@
 
 #include <config.h>
 
+#ifndef HAVE_STRSIGNAL
+
 #include <sys/types.h>
 
 #include <stdio.h>
 #include <signal.h>
 
-#include "missing.h"
-
 #define DEFAULT_TEXT_DOMAIN	"sudo"
-#include "gettext.h"
+#include "gettext.h"		/* must be included before missing.h */
+
+#include "missing.h"
 
 #if defined(HAVE_DECL_SYS_SIGLIST) && HAVE_DECL_SYS_SIGLIST == 1
 # define sudo_sys_siglist	sys_siglist
@@ -47,3 +49,4 @@ strsignal(int signo)
     /* XXX - should be "Unknown signal: %d" */
     return _("Unknown signal");
 }
+#endif /* HAVE_STRSIGNAL */

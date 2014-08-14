@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2010-2012 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -33,9 +33,11 @@
 # include <unistd.h>
 #endif /* HAVE_UNISTD_H */
 #include <termios.h>
+#include <limits.h>
 
 #include "missing.h"
 #include "sudo_debug.h"
+#include "sudo_util.h"
 
 /* Compatibility with older tty systems. */
 #if !defined(TIOCGWINSZ) && defined(TIOCGSIZE)
@@ -77,10 +79,14 @@ get_ttysize(int *rowp, int *colp)
 	char *p;
 
 	/* Fall back on $LINES and $COLUMNS. */
-	if ((p = getenv("LINES")) == NULL || (*rowp = atoi(p)) <= 0)
+	if ((p = getenv("LINES")) == NULL ||
+	    (*rowp = strtonum(p, 1, INT_MAX, NULL)) <= 0) {
 	    *rowp = 24;
-	if ((p = getenv("COLUMNS")) == NULL || (*colp = atoi(p)) <= 0)
+	}
+	if ((p = getenv("COLUMNS")) == NULL ||
+	    (*colp = strtonum(p, 1, INT_MAX, NULL)) <= 0) {
 	    *colp = 80;
+	}
     }
 
     debug_return;

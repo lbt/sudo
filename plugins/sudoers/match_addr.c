@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 1998-2005, 2007-2011
+ * Copyright (c) 1996, 1998-2005, 2007-2013
  *	Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -45,33 +45,33 @@
 #endif /* HAVE_UNISTD_H */
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <netdb.h>
 
 #include "sudoers.h"
 #include "interfaces.h"
 
 static bool
-addr_matches_if(char *n)
+addr_matches_if(const char *n)
 {
     union sudo_in_addr_un addr;
     struct interface *ifp;
 #ifdef HAVE_STRUCT_IN6_ADDR
-    int j;
+    unsigned int j;
 #endif
-    int family;
+    unsigned int family;
     debug_decl(addr_matches_if, SUDO_DEBUG_MATCH)
 
 #ifdef HAVE_STRUCT_IN6_ADDR
-    if (inet_pton(AF_INET6, n, &addr.ip6) > 0) {
+    if (inet_pton(AF_INET6, n, &addr.ip6) == 1) {
 	family = AF_INET6;
     } else
 #endif /* HAVE_STRUCT_IN6_ADDR */
-    {
+    if (inet_pton(AF_INET, n, &addr.ip4) == 1) {
 	family = AF_INET;
-	addr.ip4.s_addr = inet_addr(n);
+    } else {
+	debug_return_bool(false);
     }
 
-    for (ifp = interfaces; ifp != NULL; ifp = ifp->next) {
+    SLIST_FOREACH(ifp, get_interfaces(), entries) {
 	if (ifp->family != family)
 	    continue;
 	switch (family) {
@@ -101,32 +101,43 @@ addr_matches_if(char *n)
 }
 
 static bool
-addr_matches_if_netmask(char *n, char *m)
+addr_matches_if_netmask(const char *n, const char *m)
 {
-    int i;
+    unsigned int i;
     union sudo_in_addr_un addr, mask;
     struct interface *ifp;
 #ifdef HAVE_STRUCT_IN6_ADDR
-    int j;
+    unsigned int j;
 #endif
-    int family;
+    unsigned int family;
+    const char *errstr;
     debug_decl(addr_matches_if, SUDO_DEBUG_MATCH)
 
 #ifdef HAVE_STRUCT_IN6_ADDR
-    if (inet_pton(AF_INET6, n, &addr.ip6) > 0)
+    if (inet_pton(AF_INET6, n, &addr.ip6) == 1)
 	family = AF_INET6;
     else
 #endif /* HAVE_STRUCT_IN6_ADDR */
-    {
+    if (inet_pton(AF_INET, n, &addr.ip4) == 1) {
 	family = AF_INET;
-	addr.ip4.s_addr = inet_addr(n);
+    } else {
+	debug_return_bool(false);
     }
 
     if (family == AF_INET) {
 	if (strchr(m, '.')) {
-	    mask.ip4.s_addr = inet_addr(m);
+	    if (inet_pton(AF_INET, m, &mask.ip4) != 1) {
+		sudo_debug_printf(SUDO_DEBUG_ERROR|SUDO_DEBUG_LINENO,
+		    "IPv4 netmask %s: %s", m, "invalid value");
+		debug_return_bool(false);
+	    }
 	} else {
-	    i = atoi(m);
+	    i = strtonum(m, 0, 32, &errstr);
+	    if (errstr != NULL) {
+		sudo_debug_printf(SUDO_DEBUG_ERROR|SUDO_DEBUG_LINENO,
+		    "IPv4 netmask %s: %s", m, errstr);
+		debug_return_bool(false);
+	    }
 	    if (i == 0)
 		mask.ip4.s_addr = 0;
 	    else if (i == 32)
@@ -139,8 +150,13 @@ addr_matches_if_netmask(char *n, char *m)
     }
 #ifdef HAVE_STRUCT_IN6_ADDR
     else {
-	if (inet_pton(AF_INET6, m, &mask.ip6) <= 0) {
-	    j = atoi(m);
+	if (inet_pton(AF_INET6, m, &mask.ip6) != 1) {
+	    j = strtonum(m, 0, 128, &errstr);
+	    if (errstr != NULL) {
+		sudo_debug_printf(SUDO_DEBUG_ERROR|SUDO_DEBUG_LINENO,
+		    "IPv6 netmask %s: %s", m, errstr);
+		debug_return_bool(false);
+	    }
 	    for (i = 0; i < sizeof(addr.ip6.s6_addr); i++) {
 		if (j < i * 8)
 		    mask.ip6.s6_addr[i] = 0;
@@ -154,7 +170,7 @@ addr_matches_if_netmask(char *n, char *m)
     }
 #endif /* HAVE_STRUCT_IN6_ADDR */
 
-    for (ifp = interfaces; ifp != NULL; ifp = ifp->next) {
+    SLIST_FOREACH(ifp, get_interfaces(), entries) {
 	if (ifp->family != family)
 	    continue;
 	switch (family) {
@@ -186,16 +202,18 @@ bool
 addr_matches(char *n)
 {
     char *m;
-    bool retval;
+    bool rc;
     debug_decl(addr_matches, SUDO_DEBUG_MATCH)
 
     /* If there's an explicit netmask, use it. */
     if ((m = strchr(n, '/'))) {
 	*m++ = '\0';
-	retval = addr_matches_if_netmask(n, m);
+	rc = addr_matches_if_netmask(n, m);
 	*(m - 1) = '/';
     } else
-	retval = addr_matches_if(n);
+	rc = addr_matches_if(n);
 
-    debug_return_bool(retval);
+    sudo_debug_printf(SUDO_DEBUG_DEBUG|SUDO_DEBUG_LINENO,
+	"IP address %s matches local host: %s", n, rc ? "true" : "false");
+    debug_return_bool(rc);
 }

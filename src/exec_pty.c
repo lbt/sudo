@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2011 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2009-2013 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -17,17 +17,10 @@
 #include <config.h>
 
 #include <sys/types.h>
-#include <sys/param.h>
-#ifdef HAVE_SYS_SYSMACROS_H
-# include <sys/sysmacros.h>
-#endif
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <sys/ioctl.h>
-#ifdef HAVE_SYS_SELECT_H
-# include <sys/select.h>
-#endif /* HAVE_SYS_SELECT_H */
 #include <stdio.h>
 #ifdef STDC_HEADERS
 # include <stdlib.h>
@@ -49,7 +42,7 @@
 #ifdef HAVE_UNISTD_H
 # include <unistd.h>
 #endif /* HAVE_UNISTD_H */
-#if TIME_WITH_SYS_TIME
+#ifdef TIME_WITH_SYS_TIME
 # include <time.h>
 #endif
 #include <errno.h>
@@ -58,6 +51,7 @@
 #include <termios.h>
 
 #include "sudo.h"
+#include "sudo_event.h"
 #include "sudo_exec.h"
 #include "sudo_plugin.h"
 #include "sudo_plugin_int.h"
@@ -68,6 +62,9 @@
 #define SFD_MASTER	3
 #define SFD_SLAVE	4
 #define SFD_USERTTY	5
+
+/* Evaluates to true if the event has /dev/tty as its fd. */
+#define USERTTY_EVENT(_ev)	(sudo_ev_get_fd((_ev)) == io_fds[SFD_USERTTY])
 
 #define TERM_COOKED	0
 #define TERM_RAW	1
@@ -80,45 +77,46 @@
 #endif
 
 struct io_buffer {
-    struct io_buffer *next;
+    SLIST_ENTRY(io_buffer) entries;
+    struct sudo_event *revent;
+    struct sudo_event *wevent;
+    bool (*action)(const char *buf, unsigned int len);
     int len; /* buffer length (how much produced) */
     int off; /* write position (how much already consumed) */
-    int rfd;  /* reader (producer) */
-    int wfd; /* writer (consumer) */
-    bool (*action)(const char *buf, unsigned int len);
-    char buf[16 * 1024];
+    char buf[32 * 1024];
 };
+
+SLIST_HEAD(io_buffer_list, io_buffer);
 
 static char slavename[PATH_MAX];
 static bool foreground, pipeline, tty_initialized;
 static int io_fds[6] = { -1, -1, -1, -1, -1, -1};
 static int ttymode = TERM_COOKED;
-static pid_t ppgrp, cmnd_pgrp;
+static pid_t ppgrp, cmnd_pgrp, mon_pgrp;
 static sigset_t ttyblock;
-static struct io_buffer *iobufs;
+static struct io_buffer_list iobufs;
 
-static void flush_output(void);
+static void del_io_events(void);
 static int exec_monitor(struct command_details *details, int backchannel);
-static void exec_pty(struct command_details *detail, int *errfd);
+static void exec_pty(struct command_details *details,
+    struct command_status *cstat, int errfd);
 static void sigwinch(int s);
 static void sync_ttysize(int src, int dst);
 static void deliver_signal(pid_t pid, int signo, bool from_parent);
 static int safe_close(int fd);
+static void ev_free_by_fd(struct sudo_event_base *evbase, int fd);
 static void check_foreground(void);
 
 /*
- * Cleanup hook for error()/errorx()
+ * Cleanup hook for fatal()/fatalx()
  */
-void
-cleanup(int gotsignal)
+static void
+pty_cleanup(void)
 {
     debug_decl(cleanup, SUDO_DEBUG_EXEC);
 
-    if (!tq_empty(&io_plugins) && io_fds[SFD_USERTTY] != -1) {
-	check_foreground();
-	if (foreground)
-	    term_restore(io_fds[SFD_USERTTY], 0);
-    }
+    if (!TAILQ_EMPTY(&io_plugins) && io_fds[SFD_USERTTY] != -1)
+	term_restore(io_fds[SFD_USERTTY], 0);
 #ifdef HAVE_SELINUX
     selinux_restore_tty();
 #endif
@@ -132,7 +130,7 @@ cleanup(int gotsignal)
  * The other end of signal_pipe is checked in the monitor event loop.
  */
 #ifdef SA_SIGINFO
-void
+static void
 mon_handler(int s, siginfo_t *info, void *context)
 {
     unsigned char signo = (unsigned char)s;
@@ -153,7 +151,7 @@ mon_handler(int s, siginfo_t *info, void *context)
     ignore_result(write(signal_pipe[1], &signo, sizeof(signo)));
 }
 #else
-void
+static void
 mon_handler(int s)
 {
     unsigned char signo = (unsigned char)s;
@@ -180,7 +178,7 @@ pty_setup(uid_t uid, const char *tty, const char *utmp_user)
     if (io_fds[SFD_USERTTY] != -1) {
 	if (!get_pty(&io_fds[SFD_MASTER], &io_fds[SFD_SLAVE],
 	    slavename, sizeof(slavename), uid))
-	    error(1, _("unable to allocate pty"));
+	    fatal(U_("unable to allocate pty"));
 	/* Add entry to utmp/utmpx? */
 	if (utmp_user != NULL)
 	    utmp_login(tty, slavename, io_fds[SFD_SLAVE], utmp_user);
@@ -199,7 +197,7 @@ log_ttyin(const char *buf, unsigned int n)
     debug_decl(log_ttyin, SUDO_DEBUG_EXEC);
 
     sigprocmask(SIG_BLOCK, &ttyblock, &omask);
-    tq_foreach_fwd(&io_plugins, plugin) {
+    TAILQ_FOREACH(plugin, &io_plugins, entries) {
 	if (plugin->u.io->log_ttyin) {
 	    if (!plugin->u.io->log_ttyin(buf, n)) {
 	    	rval = false;
@@ -222,7 +220,7 @@ log_stdin(const char *buf, unsigned int n)
     debug_decl(log_stdin, SUDO_DEBUG_EXEC);
 
     sigprocmask(SIG_BLOCK, &ttyblock, &omask);
-    tq_foreach_fwd(&io_plugins, plugin) {
+    TAILQ_FOREACH(plugin, &io_plugins, entries) {
 	if (plugin->u.io->log_stdin) {
 	    if (!plugin->u.io->log_stdin(buf, n)) {
 	    	rval = false;
@@ -245,7 +243,7 @@ log_ttyout(const char *buf, unsigned int n)
     debug_decl(log_ttyout, SUDO_DEBUG_EXEC);
 
     sigprocmask(SIG_BLOCK, &ttyblock, &omask);
-    tq_foreach_fwd(&io_plugins, plugin) {
+    TAILQ_FOREACH(plugin, &io_plugins, entries) {
 	if (plugin->u.io->log_ttyout) {
 	    if (!plugin->u.io->log_ttyout(buf, n)) {
 	    	rval = false;
@@ -268,7 +266,7 @@ log_stdout(const char *buf, unsigned int n)
     debug_decl(log_stdout, SUDO_DEBUG_EXEC);
 
     sigprocmask(SIG_BLOCK, &ttyblock, &omask);
-    tq_foreach_fwd(&io_plugins, plugin) {
+    TAILQ_FOREACH(plugin, &io_plugins, entries) {
 	if (plugin->u.io->log_stdout) {
 	    if (!plugin->u.io->log_stdout(buf, n)) {
 	    	rval = false;
@@ -291,7 +289,7 @@ log_stderr(const char *buf, unsigned int n)
     debug_decl(log_stderr, SUDO_DEBUG_EXEC);
 
     sigprocmask(SIG_BLOCK, &ttyblock, &omask);
-    tq_foreach_fwd(&io_plugins, plugin) {
+    TAILQ_FOREACH(plugin, &io_plugins, entries) {
 	if (plugin->u.io->log_stderr) {
 	    if (!plugin->u.io->log_stderr(buf, n)) {
 	    	rval = false;
@@ -337,15 +335,15 @@ suspend_parent(int signo)
 {
     char signame[SIG2STR_MAX];
     sigaction_t sa, osa;
-    int n, oldmode = ttymode, rval = 0;
+    int n, rval = 0;
     debug_decl(suspend_parent, SUDO_DEBUG_EXEC);
 
     switch (signo) {
     case SIGTTOU:
     case SIGTTIN:
 	/*
-	 * If we are the foreground process, just resume the command.
-	 * Otherwise, re-send the signal with the handler disabled.
+	 * If sudo is already the foreground process, just resume the command
+	 * in the foreground.  If not, we'll suspend sudo and resume later.
 	 */
 	if (!foreground)
 	    check_foreground();
@@ -359,29 +357,27 @@ suspend_parent(int signo)
 	    rval = SIGCONT_FG; /* resume command in foreground */
 	    break;
 	}
-	ttymode = TERM_RAW;
 	/* FALLTHROUGH */
     case SIGSTOP:
     case SIGTSTP:
-	/* Flush any remaining output before suspending. */
-	flush_output();
+	/* Flush any remaining output and deschedule I/O events. */
+	del_io_events();
 
 	/* Restore original tty mode before suspending. */
-	if (oldmode != TERM_COOKED) {
-	    do {
-		n = term_restore(io_fds[SFD_USERTTY], 0);
-	    } while (!n && errno == EINTR);
-	}
+	if (ttymode != TERM_COOKED)
+	    term_restore(io_fds[SFD_USERTTY], 0);
 
 	if (sig2str(signo, signame) == -1)
 	    snprintf(signame, sizeof(signame), "%d", signo);
 
 	/* Suspend self and continue command when we resume. */
-	zero_bytes(&sa, sizeof(sa));
-	sigemptyset(&sa.sa_mask);
-	sa.sa_flags = SA_INTERRUPT; /* do not restart syscalls */
-	sa.sa_handler = SIG_DFL;
-	sigaction(signo, &sa, &osa);
+	if (signo != SIGSTOP) {
+	    memset(&sa, 0, sizeof(sa));
+	    sigemptyset(&sa.sa_mask);
+	    sa.sa_flags = SA_RESTART;
+	    sa.sa_handler = SIG_DFL;
+	    sudo_sigaction(signo, &sa, &osa);
+	}
 	sudo_debug_printf(SUDO_DEBUG_INFO, "kill parent SIG%s", signame);
 	if (killpg(ppgrp, signo) != 0)
 	    warning("killpg(%d, SIG%s)", (int)ppgrp, signame);
@@ -390,25 +386,30 @@ suspend_parent(int signo)
 	check_foreground();
 
 	/*
-	 * Only modify term if we are foreground process and either
-	 * the old tty mode was not cooked or command got SIGTT{IN,OU}
+	 * We always resume the command in the foreground if sudo itself
+	 * is the foreground process.  This helps work around poorly behaved
+	 * programs that catch SIGTTOU/SIGTTIN but suspend themselves with
+	 * SIGSTOP.  At worst, sudo will go into the background but upon
+	 * resume the command will be runnable.  Otherwise, we can get into
+	 * a situation where the command will immediately suspend itself.
 	 */
 	sudo_debug_printf(SUDO_DEBUG_INFO, "parent is in %s, ttymode %d -> %d",
-	    foreground ? "foreground" : "background", oldmode, ttymode);
+	    foreground ? "foreground" : "background", ttymode,
+	    foreground ? TERM_RAW : TERM_COOKED);
 
-	if (ttymode != TERM_COOKED) {
-	    if (foreground) {
-		/* Set raw mode. */
-		do {
-		    n = term_raw(io_fds[SFD_USERTTY], 0);
-		} while (!n && errno == EINTR);
-	    } else {
-		/* Background process, no access to tty. */
-		ttymode = TERM_COOKED;
-	    }
+	if (foreground) {
+	    /* Foreground process, set tty to raw mode. */
+	    do {
+		n = term_raw(io_fds[SFD_USERTTY], 0);
+	    } while (!n && errno == EINTR);
+	    ttymode = TERM_RAW;
+	} else {
+	    /* Background process, no access to tty. */
+	    ttymode = TERM_COOKED;
 	}
 
-	sigaction(signo, &osa, NULL);
+	if (signo != SIGSTOP)
+	    sudo_sigaction(signo, &osa, NULL);
 	rval = ttymode == TERM_RAW ? SIGCONT_FG : SIGCONT_BG;
 	break;
     }
@@ -448,102 +449,161 @@ terminate_command(pid_t pid, bool use_pgrp)
     debug_return;
 }
 
-static struct io_buffer *
-io_buf_new(int rfd, int wfd, bool (*action)(const char *, unsigned int),
-    struct io_buffer *head)
+/*
+ * Read/write an iobuf that is ready.
+ */
+static void
+io_callback(int fd, int what, void *v)
 {
+    struct io_buffer *iob = v;
+    struct sudo_event_base *evbase;
+    int n;
+    debug_decl(io_callback, SUDO_DEBUG_EXEC);
+
+    if (ISSET(what, SUDO_EV_READ)) {
+	evbase = sudo_ev_get_base(iob->revent);
+	do {
+	    n = read(fd, iob->buf + iob->len, sizeof(iob->buf) - iob->len);
+	} while (n == -1 && errno == EINTR);
+	switch (n) {
+	    case -1:
+		if (errno == EAGAIN)
+		    break;
+		/* treat read error as fatal and close the fd */
+		sudo_debug_printf(SUDO_DEBUG_ERROR,
+		    "error reading fd %d: %s", fd, strerror(errno));
+		/* FALLTHROUGH */
+	    case 0:
+		/* got EOF or pty has gone away */
+		if (n == 0) {
+		    sudo_debug_printf(SUDO_DEBUG_INFO,
+			"read EOF from fd %d", fd);
+		}
+		safe_close(fd);
+		ev_free_by_fd(evbase, fd);
+		/* If writer already consumed the buffer, close it too. */
+		if (iob->wevent != NULL && iob->off == iob->len) {
+		    safe_close(sudo_ev_get_fd(iob->wevent));
+		    ev_free_by_fd(evbase, sudo_ev_get_fd(iob->wevent));
+		    iob->off = iob->len = 0;
+		}
+		break;
+	    default:
+		sudo_debug_printf(SUDO_DEBUG_INFO,
+		    "read %d bytes from fd %d", n, fd);
+		if (!iob->action(iob->buf + iob->len, n))
+		    terminate_command(cmnd_pid, true);
+		iob->len += n;
+		/* Enable writer if not /dev/tty or we are foreground pgrp. */
+		if (iob->wevent != NULL &&
+		    (foreground || !USERTTY_EVENT(iob->wevent))) {
+		    if (sudo_ev_add(evbase, iob->wevent, NULL, false) == -1)
+			fatal(U_("unable to add event to queue"));
+		}
+		/* Re-enable reader if buffer is not full. */
+		if (iob->len != sizeof(iob->buf)) {
+		    if (sudo_ev_add(evbase, iob->revent, NULL, false) == -1)
+			fatal(U_("unable to add event to queue"));
+		}
+		break;
+	}
+    }
+    if (ISSET(what, SUDO_EV_WRITE)) {
+	evbase = sudo_ev_get_base(iob->wevent);
+	do {
+	    n = write(fd, iob->buf + iob->off, iob->len - iob->off);
+	} while (n == -1 && errno == EINTR);
+	if (n == -1) {
+	    switch (errno) {
+	    case EPIPE:
+	    case ENXIO:
+	    case EIO:
+	    case EBADF:
+		/* other end of pipe closed or pty revoked */
+		sudo_debug_printf(SUDO_DEBUG_INFO,
+		    "unable to write %d bytes to fd %d",
+		    iob->len - iob->off, fd);
+		if (iob->revent != NULL) {
+		    safe_close(sudo_ev_get_fd(iob->revent));
+		    ev_free_by_fd(evbase, sudo_ev_get_fd(iob->revent));
+		}
+		safe_close(fd);
+		ev_free_by_fd(evbase, fd);
+		break;
+	    case EAGAIN:
+		/* not an error */
+		break;
+	    default:
+#if 0 /* XXX -- how to set cstat? stash in iobufs instead? */
+		if (cstat != NULL) {
+		    cstat->type = CMD_ERRNO;
+		    cstat->val = errno;
+		}
+#endif /* XXX */
+		sudo_debug_printf(SUDO_DEBUG_ERROR,
+		    "error writing fd %d: %s", fd, strerror(errno));
+		sudo_ev_loopbreak(evbase);
+		break;
+	    }
+	} else {
+	    sudo_debug_printf(SUDO_DEBUG_INFO,
+		"wrote %d bytes to fd %d", n, fd);
+	    iob->off += n;
+	    /* Reset buffer if fully consumed. */
+	    if (iob->off == iob->len) {
+		iob->off = iob->len = 0;
+		/* Forward the EOF from reader to writer. */
+		if (iob->revent == NULL) {
+		    safe_close(fd);
+		    ev_free_by_fd(evbase, fd);
+		}
+	    }
+	    /* Re-enable writer if buffer is not empty. */
+	    if (iob->len > iob->off) {
+		if (sudo_ev_add(evbase, iob->wevent, NULL, false) == -1)
+		    fatal(U_("unable to add event to queue"));
+	    }
+	    /* Enable reader if buffer is not full. */
+	    if (iob->revent != NULL &&
+		(ttymode == TERM_RAW || !USERTTY_EVENT(iob->revent))) {
+		if (iob->len != sizeof(iob->buf)) {
+		    if (sudo_ev_add(evbase, iob->revent, NULL, false) == -1)
+			fatal(U_("unable to add event to queue"));
+		}
+	    }
+	}
+    }
+}
+
+static void
+io_buf_new(int rfd, int wfd, bool (*action)(const char *, unsigned int),
+    struct io_buffer_list *head)
+{
+    int n;
     struct io_buffer *iob;
     debug_decl(io_buf_new, SUDO_DEBUG_EXEC);
 
-    iob = ecalloc(1, sizeof(*iob));
-    iob->rfd = rfd;
-    iob->wfd = wfd;
+    /* Set non-blocking mode. */
+    n = fcntl(rfd, F_GETFL, 0);
+    if (n != -1 && !ISSET(n, O_NONBLOCK))
+	(void) fcntl(rfd, F_SETFL, n | O_NONBLOCK);
+    n = fcntl(wfd, F_GETFL, 0);
+    if (n != -1 && !ISSET(n, O_NONBLOCK))
+	(void) fcntl(wfd, F_SETFL, n | O_NONBLOCK);
+
+    /* Allocate and add to head of list. */
+    iob = emalloc(sizeof(*iob));
+    iob->revent = sudo_ev_alloc(rfd, SUDO_EV_READ, io_callback, iob);
+    iob->wevent = sudo_ev_alloc(wfd, SUDO_EV_WRITE, io_callback, iob);
+    iob->len = 0;
+    iob->off = 0;
     iob->action = action;
-    iob->next = head;
+    iob->buf[0] = '\0';
+    if (iob->revent == NULL || iob->wevent == NULL)
+	fatal(NULL);
+    SLIST_INSERT_HEAD(head, iob, entries);
 
-    debug_return_ptr(iob);
-}
-
-/*
- * Read/write iobufs depending on fdsr and fdsw.
- * Returns the number of errors.
- */
-int
-perform_io(fd_set *fdsr, fd_set *fdsw, struct command_status *cstat)
-{
-    struct io_buffer *iob;
-    int n, errors = 0;
-    debug_decl(perform_io, SUDO_DEBUG_EXEC);
-
-    for (iob = iobufs; iob; iob = iob->next) {
-	if (iob->rfd != -1 && FD_ISSET(iob->rfd, fdsr)) {
-	    do {
-		n = read(iob->rfd, iob->buf + iob->len,
-		    sizeof(iob->buf) - iob->len);
-	    } while (n == -1 && errno == EINTR);
-	    switch (n) {
-		case -1:
-		    if (errno != EAGAIN) {
-			/* treat read error as fatal and close the fd */
-			sudo_debug_printf(SUDO_DEBUG_ERROR,
-			    "error reading fd %d: %s", iob->rfd,
-			    strerror(errno));
-			safe_close(iob->rfd);
-			iob->rfd = -1;
-		    }
-		    break;
-		case 0:
-		    /* got EOF or pty has gone away */
-		    sudo_debug_printf(SUDO_DEBUG_INFO,
-			"read EOF from fd %d", iob->rfd);
-		    safe_close(iob->rfd);
-		    iob->rfd = -1;
-		    break;
-		default:
-		    sudo_debug_printf(SUDO_DEBUG_INFO,
-			"read %d bytes from fd %d", n, iob->rfd);
-		    if (!iob->action(iob->buf + iob->len, n))
-			terminate_command(cmnd_pid, true);
-		    iob->len += n;
-		    break;
-	    }
-	}
-	if (iob->wfd != -1 && FD_ISSET(iob->wfd, fdsw)) {
-	    do {
-		n = write(iob->wfd, iob->buf + iob->off,
-		    iob->len - iob->off);
-	    } while (n == -1 && errno == EINTR);
-	    if (n == -1) {
-		if (errno == EPIPE || errno == ENXIO || errno == EIO || errno == EBADF) {
-		    sudo_debug_printf(SUDO_DEBUG_INFO,
-			"unable to write %d bytes to fd %d",
-			    iob->len - iob->off, iob->wfd);
-		    /* other end of pipe closed or pty revoked */
-		    if (iob->rfd != -1) {
-			safe_close(iob->rfd);
-			iob->rfd = -1;
-		    }
-		    safe_close(iob->wfd);
-		    iob->wfd = -1;
-		    continue;
-		}
-		if (errno != EAGAIN) {
-		    errors++;
-		    sudo_debug_printf(SUDO_DEBUG_ERROR,
-			"error writing fd %d: %s", iob->wfd, strerror(errno));
-		}
-	    } else {
-		sudo_debug_printf(SUDO_DEBUG_INFO,
-		    "wrote %d bytes to fd %d", n, iob->wfd);
-		iob->off += n;
-	    }
-	}
-    }
-    if (errors && cstat != NULL) {
-	cstat->type = CMD_ERRNO;
-	cstat->val = errno;
-    }
-    debug_return_int(errors);
+    debug_return;
 }
 
 /*
@@ -552,25 +612,24 @@ perform_io(fd_set *fdsr, fd_set *fdsw, struct command_status *cstat)
  * Returns the child pid.
  */
 int
-fork_pty(struct command_details *details, int sv[], int *maxfd, sigset_t *omask)
+fork_pty(struct command_details *details, int sv[], sigset_t *omask)
 {
     struct command_status cstat;
-    struct io_buffer *iob;
     int io_pipe[3][2], n;
     sigaction_t sa;
     sigset_t mask;
     pid_t child;
     debug_decl(fork_pty, SUDO_DEBUG_EXEC);
-        
+
     ppgrp = getpgrp(); /* parent's pgrp, so child can signal us */
-     
-    zero_bytes(&sa, sizeof(sa));
+
+    memset(&sa, 0, sizeof(sa));
     sigemptyset(&sa.sa_mask);
- 
+
     if (io_fds[SFD_USERTTY] != -1) {
 	sa.sa_flags = SA_RESTART;
 	sa.sa_handler = sigwinch;
-	sigaction(SIGWINCH, &sa, NULL);
+	sudo_sigaction(SIGWINCH, &sa, NULL);
     }
 
     /* So we can block tty-generated signals */
@@ -593,13 +652,13 @@ fork_pty(struct command_details *details, int sv[], int *maxfd, sigset_t *omask)
     if (io_fds[SFD_USERTTY] != -1) {
 	/* Read from /dev/tty, write to pty master */
 	if (!ISSET(details->flags, CD_BACKGROUND)) {
-	    iobufs = io_buf_new(io_fds[SFD_USERTTY], io_fds[SFD_MASTER],
-		log_ttyin, iobufs);
+	    io_buf_new(io_fds[SFD_USERTTY], io_fds[SFD_MASTER],
+		log_ttyin, &iobufs);
 	}
 
 	/* Read from pty master, write to /dev/tty */
-	iobufs = io_buf_new(io_fds[SFD_MASTER], io_fds[SFD_USERTTY],
-	    log_ttyout, iobufs);
+	io_buf_new(io_fds[SFD_MASTER], io_fds[SFD_USERTTY],
+	    log_ttyout, &iobufs);
 
 	/* Are we the foreground process? */
 	foreground = tcgetpgrp(io_fds[SFD_USERTTY]) == ppgrp;
@@ -614,30 +673,36 @@ fork_pty(struct command_details *details, int sv[], int *maxfd, sigset_t *omask)
 	sudo_debug_printf(SUDO_DEBUG_INFO, "stdin not a tty, creating a pipe");
 	pipeline = true;
 	if (pipe(io_pipe[STDIN_FILENO]) != 0)
-	    error(1, _("unable to create pipe"));
-	iobufs = io_buf_new(STDIN_FILENO, io_pipe[STDIN_FILENO][1],
-	    log_stdin, iobufs);
+	    fatal(U_("unable to create pipe"));
+	io_buf_new(STDIN_FILENO, io_pipe[STDIN_FILENO][1],
+	    log_stdin, &iobufs);
 	io_fds[SFD_STDIN] = io_pipe[STDIN_FILENO][0];
     }
     if (io_fds[SFD_STDOUT] == -1 || !isatty(STDOUT_FILENO)) {
 	sudo_debug_printf(SUDO_DEBUG_INFO, "stdout not a tty, creating a pipe");
 	pipeline = true;
 	if (pipe(io_pipe[STDOUT_FILENO]) != 0)
-	    error(1, _("unable to create pipe"));
-	iobufs = io_buf_new(io_pipe[STDOUT_FILENO][0], STDOUT_FILENO,
-	    log_stdout, iobufs);
+	    fatal(U_("unable to create pipe"));
+	io_buf_new(io_pipe[STDOUT_FILENO][0], STDOUT_FILENO,
+	    log_stdout, &iobufs);
 	io_fds[SFD_STDOUT] = io_pipe[STDOUT_FILENO][1];
     }
     if (io_fds[SFD_STDERR] == -1 || !isatty(STDERR_FILENO)) {
 	sudo_debug_printf(SUDO_DEBUG_INFO, "stderr not a tty, creating a pipe");
 	if (pipe(io_pipe[STDERR_FILENO]) != 0)
-	    error(1, _("unable to create pipe"));
-	iobufs = io_buf_new(io_pipe[STDERR_FILENO][0], STDERR_FILENO,
-	    log_stderr, iobufs);
+	    fatal(U_("unable to create pipe"));
+	io_buf_new(io_pipe[STDERR_FILENO][0], STDERR_FILENO,
+	    log_stderr, &iobufs);
 	io_fds[SFD_STDERR] = io_pipe[STDERR_FILENO][1];
     }
 
+    /* We don't want to receive SIGTTIN/SIGTTOU, getting EIO is preferable. */
+    sa.sa_handler = SIG_IGN;
+    sudo_sigaction(SIGTTIN, &sa, NULL);
+    sudo_sigaction(SIGTTOU, &sa, NULL);
+
     /* Job control signals to relay from parent to child. */
+    sigfillset(&sa.sa_mask);
     sa.sa_flags = SA_INTERRUPT; /* do not restart syscalls */
 #ifdef SA_SIGINFO
     sa.sa_flags |= SA_SIGINFO;
@@ -645,12 +710,7 @@ fork_pty(struct command_details *details, int sv[], int *maxfd, sigset_t *omask)
 #else
     sa.sa_handler = handler;
 #endif
-    sigaction(SIGTSTP, &sa, NULL);
-
-    /* We don't want to receive SIGTTIN/SIGTTOU, getting EIO is preferable. */
-    sa.sa_handler = SIG_IGN;
-    sigaction(SIGTTIN, &sa, NULL);
-    sigaction(SIGTTOU, &sa, NULL);
+    sudo_sigaction(SIGTSTP, &sa, NULL);
 
     if (foreground) {
 	/* Copy terminal attrs from user tty -> pty slave. */
@@ -659,14 +719,14 @@ fork_pty(struct command_details *details, int sv[], int *maxfd, sigset_t *omask)
 	    sync_ttysize(io_fds[SFD_USERTTY], io_fds[SFD_SLAVE]);
 	}
 
-	/* Start out in raw mode if we are not part of a pipeline. */
-	if (!pipeline) {
+	/* Start out in raw mode unless part of a pipeline or backgrounded. */
+	if (!pipeline && !ISSET(details->flags, CD_EXEC_BG)) {
 	    ttymode = TERM_RAW;
 	    do {
 		n = term_raw(io_fds[SFD_USERTTY], 0);
 	    } while (!n && errno == EINTR);
 	    if (!n)
-		error(1, _("unable to set terminal to raw mode"));
+		fatal(U_("unable to set terminal to raw mode"));
 	}
     }
 
@@ -675,7 +735,7 @@ fork_pty(struct command_details *details, int sv[], int *maxfd, sigset_t *omask)
      * or certain pam modules won't be able to track their state.
      */
     if (policy_init_session(details) != true)
-	errorx(1, _("policy plugin failed session initialization"));
+	fatalx(U_("policy plugin failed session initialization"));
 
     /*
      * Block some signals until cmnd_pid is set in the parent to avoid a
@@ -691,7 +751,7 @@ fork_pty(struct command_details *details, int sv[], int *maxfd, sigset_t *omask)
     child = sudo_debug_fork();
     switch (child) {
     case -1:
-	error(1, _("unable to fork"));
+	fatal(U_("unable to fork"));
 	break;
     case 0:
 	/* child */
@@ -700,16 +760,14 @@ fork_pty(struct command_details *details, int sv[], int *maxfd, sigset_t *omask)
 	close(signal_pipe[1]);
 	fcntl(sv[1], F_SETFD, FD_CLOEXEC);
 	sigprocmask(SIG_SETMASK, omask, NULL);
-	if (exec_setup(details, slavename, io_fds[SFD_SLAVE]) == true) {
-	    /* Close the other end of the stdin/stdout/stderr pipes and exec. */
-	    if (io_pipe[STDIN_FILENO][1])
-		close(io_pipe[STDIN_FILENO][1]);
-	    if (io_pipe[STDOUT_FILENO][0])
-		close(io_pipe[STDOUT_FILENO][0]);
-	    if (io_pipe[STDERR_FILENO][0])
-		close(io_pipe[STDERR_FILENO][0]);
-	    exec_monitor(details, sv[1]);
-	}
+	/* Close the other end of the stdin/stdout/stderr pipes and exec. */
+	if (io_pipe[STDIN_FILENO][1])
+	    close(io_pipe[STDIN_FILENO][1]);
+	if (io_pipe[STDOUT_FILENO][0])
+	    close(io_pipe[STDOUT_FILENO][0]);
+	if (io_pipe[STDERR_FILENO][0])
+	    close(io_pipe[STDERR_FILENO][0]);
+	exec_monitor(details, sv[1]);
 	cstat.type = CMD_ERRNO;
 	cstat.val = errno;
 	ignore_result(send(sv[1], &cstat, sizeof(cstat), 0));
@@ -721,24 +779,8 @@ fork_pty(struct command_details *details, int sv[], int *maxfd, sigset_t *omask)
 	close(io_pipe[STDIN_FILENO][0]);
     if (io_pipe[STDOUT_FILENO][1])
 	close(io_pipe[STDOUT_FILENO][1]);
-    if (io_pipe[STDERR_FILENO][1]) 
+    if (io_pipe[STDERR_FILENO][1])
 	close(io_pipe[STDERR_FILENO][1]);
-
-    for (iob = iobufs; iob; iob = iob->next) {
-	/* Determine maxfd */
-	if (iob->rfd > *maxfd)
-	    *maxfd = iob->rfd;
-	if (iob->wfd > *maxfd)
-	    *maxfd = iob->wfd;
-
-	/* Set non-blocking mode. */
-	n = fcntl(iob->rfd, F_GETFL, 0);
-	if (n != -1 && !ISSET(n, O_NONBLOCK))
-	    (void) fcntl(iob->rfd, F_SETFL, n | O_NONBLOCK);
-	n = fcntl(iob->wfd, F_GETFL, 0);
-	if (n != -1 && !ISSET(n, O_NONBLOCK))
-	    (void) fcntl(iob->wfd, F_SETFL, n | O_NONBLOCK);
-    }
 
     debug_return_int(child);
 }
@@ -746,6 +788,7 @@ fork_pty(struct command_details *details, int sv[], int *maxfd, sigset_t *omask)
 void
 pty_close(struct command_status *cstat)
 {
+    struct io_buffer *iob;
     int n;
     debug_decl(pty_close, SUDO_DEBUG_EXEC);
 
@@ -757,16 +800,17 @@ pty_close(struct command_status *cstat)
 	    (void) fcntl(io_fds[SFD_USERTTY], F_SETFL, n);
 	}
     }
-    flush_output();
+    del_io_events();
 
-    if (io_fds[SFD_USERTTY] != -1) {
-	check_foreground();
-	if (foreground) {
-	    do {
-		n = term_restore(io_fds[SFD_USERTTY], 0);
-	    } while (!n && errno == EINTR);
-	}
+    /* Free I/O buffers. */
+    while ((iob = SLIST_FIRST(&iobufs)) != NULL) {
+	SLIST_REMOVE_HEAD(&iobufs, entries);
+	efree(iob);
     }
+
+    /* Restore terminal settings. */
+    if (io_fds[SFD_USERTTY] != -1)
+	term_restore(io_fds[SFD_USERTTY], 0);
 
     /* If child was signalled, write the reason to stdout like the shell. */
     if (cstat->type == CMD_WSTATUS && WIFSIGNALED(cstat->val)) {
@@ -788,38 +832,101 @@ pty_close(struct command_status *cstat)
 }
 
 /*
- * Fill in fdsr and fdsw based on the io buffers list.
- * Called prior to select().
+ * Schedule I/O events before starting the main event loop or
+ * resuming from suspend.
  */
 void
-fd_set_iobs(fd_set *fdsr, fd_set *fdsw)
+add_io_events(struct sudo_event_base *evbase)
 {
     struct io_buffer *iob;
-    debug_decl(fd_set_iobs, SUDO_DEBUG_EXEC);
+    debug_decl(add_io_events, SUDO_DEBUG_EXEC);
 
-    for (iob = iobufs; iob; iob = iob->next) {
-	if (iob->rfd == -1 && iob->wfd == -1)
-	    continue;
-	if (iob->off == iob->len) {
-	    iob->off = iob->len = 0;
-	    /* Forward the EOF from reader to writer. */
-	    if (iob->rfd == -1) {
-		safe_close(iob->wfd);
-		iob->wfd = -1;
+    /*
+     * Schedule all readers as long as the buffer is not full.
+     * Schedule writers that contain buffered data.
+     * Normally, write buffers are added on demand when data is read.
+     */
+    SLIST_FOREACH(iob, &iobufs, entries) {
+	/* Don't read/write from /dev/tty if we are not in the foreground. */
+	if (iob->revent != NULL &&
+	    (ttymode == TERM_RAW || !USERTTY_EVENT(iob->revent))) {
+	    if (iob->len != sizeof(iob->buf)) {
+		sudo_debug_printf(SUDO_DEBUG_INFO,
+		    "added I/O revent %p, fd %d, events %d",
+		    iob->revent, iob->revent->fd, iob->revent->events);
+		if (sudo_ev_add(evbase, iob->revent, NULL, false) == -1)
+		    fatal(U_("unable to add event to queue"));
 	    }
 	}
-	/* Don't read/write /dev/tty if we are not in the foreground. */
-	if (iob->rfd != -1 &&
-	    (ttymode == TERM_RAW || iob->rfd != io_fds[SFD_USERTTY])) {
-	    if (iob->len != sizeof(iob->buf))
-		FD_SET(iob->rfd, fdsr);
-	}
-	if (iob->wfd != -1 &&
-	    (foreground || iob->wfd != io_fds[SFD_USERTTY])) {
-	    if (iob->len > iob->off)
-		FD_SET(iob->wfd, fdsw);
+	if (iob->wevent != NULL &&
+	    (foreground || !USERTTY_EVENT(iob->wevent))) {
+	    if (iob->len > iob->off) {
+		sudo_debug_printf(SUDO_DEBUG_INFO,
+		    "added I/O wevent %p, fd %d, events %d",
+		    iob->wevent, iob->wevent->fd, iob->wevent->events);
+		if (sudo_ev_add(evbase, iob->wevent, NULL, false) == -1)
+		    fatal(U_("unable to add event to queue"));
+	    }
 	}
     }
+    debug_return;
+}
+
+/*
+ * Flush any output buffered in iobufs or readable from fds other
+ * than /dev/tty.  Removes I/O events from the event base when done.
+ */
+static void
+del_io_events(void)
+{
+    struct io_buffer *iob;
+    struct sudo_event_base *evbase;
+    debug_decl(del_io_events, SUDO_DEBUG_EXEC);
+
+    /* Remove iobufs from existing event base. */
+    SLIST_FOREACH(iob, &iobufs, entries) {
+	if (iob->revent != NULL) {
+	    sudo_debug_printf(SUDO_DEBUG_INFO,
+		"deleted I/O revent %p, fd %d, events %d",
+		iob->revent, iob->revent->fd, iob->revent->events);
+	    sudo_ev_del(NULL, iob->revent);
+	}
+	if (iob->wevent != NULL) {
+	    sudo_debug_printf(SUDO_DEBUG_INFO,
+		"deleted I/O wevent %p, fd %d, events %d",
+		iob->wevent, iob->wevent->fd, iob->wevent->events);
+	    sudo_ev_del(NULL, iob->wevent);
+	}
+    }
+
+    /* Create temporary event base for flushing. */
+    evbase = sudo_ev_base_alloc();
+    if (evbase == NULL)
+	fatal(NULL);
+
+    /* Avoid reading from /dev/tty, just flush existing data. */
+    SLIST_FOREACH(iob, &iobufs, entries) {
+	/* Don't read from /dev/tty while flushing. */
+	if (iob->revent != NULL && !USERTTY_EVENT(iob->revent)) {
+	    if (iob->len != sizeof(iob->buf)) {
+		if (sudo_ev_add(evbase, iob->revent, NULL, false) == -1)
+		    fatal(U_("unable to add event to queue"));
+	    }
+	}
+	/* Flush any write buffers with data in them. */
+	if (iob->wevent != NULL) {
+	    if (iob->len > iob->off) {
+		if (sudo_ev_add(evbase, iob->wevent, NULL, false) == -1)
+		    fatal(U_("unable to add event to queue"));
+	    }
+	}
+    }
+
+    (void) sudo_ev_loop(evbase, SUDO_EVLOOP_NONBLOCK);
+
+    /* Free temporary event base, removing its events. */
+    sudo_ev_base_free(evbase);
+
     debug_return;
 }
 
@@ -830,7 +937,11 @@ deliver_signal(pid_t pid, int signo, bool from_parent)
     int status;
     debug_decl(deliver_signal, SUDO_DEBUG_EXEC);
 
-    if (sig2str(signo, signame) == -1)
+    if (signo == SIGCONT_FG)
+	strlcpy(signame, "CONT_FG", sizeof(signame));
+    else if (signo == SIGCONT_BG)
+	strlcpy(signame, "CONT_BG", sizeof(signame));
+    else if (sig2str(signo, signame) == -1)
 	snprintf(signame, sizeof(signame), "%d", signo);
 
     /* Handle signal from parent. */
@@ -850,7 +961,7 @@ deliver_signal(pid_t pid, int signo, bool from_parent)
     case SIGCONT_BG:
 	/* Continue in background, I take controlling tty. */
 	do {
-	    status = tcsetpgrp(io_fds[SFD_SLAVE], getpid());
+	    status = tcsetpgrp(io_fds[SFD_SLAVE], mon_pgrp);
 	} while (status == -1 && errno == EINTR);
 	killpg(pid, SIGCONT);
 	break;
@@ -920,9 +1031,12 @@ handle_sigchld(int backchannel, struct command_status *cstat)
 		    snprintf(signame, sizeof(signame), "%d", WSTOPSIG(status));
 		sudo_debug_printf(SUDO_DEBUG_INFO,
 		    "command stopped, SIG%s", signame);
+		/* Saved the foreground pgid so we can restore it later. */
 		do {
-		    cmnd_pgrp = tcgetpgrp(io_fds[SFD_SLAVE]);
-		} while (cmnd_pgrp == -1 && errno == EINTR);
+		    pid = tcgetpgrp(io_fds[SFD_SLAVE]);
+		} while (pid == -1 && errno == EINTR);
+		if (pid != mon_pgrp)
+		    cmnd_pgrp = pid;
 		if (send_status(backchannel, cstat) == -1)
 		    return alive; /* XXX */
 	    } else if (WIFSIGNALED(status)) {
@@ -941,6 +1055,100 @@ handle_sigchld(int backchannel, struct command_status *cstat)
     debug_return_bool(alive);
 }
 
+struct monitor_closure {
+    struct sudo_event_base *evbase;
+    struct sudo_event *errpipe_event;
+    struct sudo_event *backchannel_event;
+    struct sudo_event *signal_pipe_event;
+    struct command_status *cstat;
+    int backchannel;
+    bool alive;
+};
+
+static void
+mon_signal_pipe_cb(int fd, int what, void *v)
+{
+    struct monitor_closure *mc = v;
+    unsigned char signo;
+    ssize_t n;
+    debug_decl(mon_signal_pipe_cb, SUDO_DEBUG_EXEC);
+
+    n = read(fd, &signo, sizeof(signo));
+    if (n == -1) {
+	if (errno != EINTR && errno != EAGAIN) {
+	    warning(U_("error reading from signal pipe"));
+	    sudo_ev_loopbreak(mc->evbase);
+	}
+    } else {
+	/*
+	 * Handle SIGCHLD specially and deliver other signals
+	 * directly to the command.
+	 */
+	if (signo == SIGCHLD) {
+	    mc->alive = handle_sigchld(mc->backchannel, mc->cstat);
+	    if (!mc->alive) {
+		/* Remove all but the errpipe event. */
+		sudo_ev_del(mc->evbase, mc->backchannel_event);
+		sudo_ev_del(mc->evbase, mc->signal_pipe_event);
+	    }
+	} else {
+	    deliver_signal(cmnd_pid, signo, false);
+	}
+    }
+    debug_return;
+}
+
+static void
+mon_errpipe_cb(int fd, int what, void *v)
+{
+    struct monitor_closure *mc = v;
+    ssize_t n;
+    debug_decl(mon_errpipe_cb, SUDO_DEBUG_EXEC);
+
+    /* read errno or EOF from command pipe */
+    n = read(fd, mc->cstat, sizeof(struct command_status));
+    if (n == -1) {
+	if (errno != EINTR && errno != EAGAIN) {
+	    warning(U_("error reading from pipe"));
+	    sudo_ev_loopbreak(mc->evbase);
+	}
+    } else {
+	/* Got errno or EOF, either way we are done with errpipe. */
+	sudo_ev_del(mc->evbase, mc->errpipe_event);
+	close(fd);
+    }
+    debug_return;
+}
+
+static void
+mon_backchannel_cb(int fd, int what, void *v)
+{
+    struct monitor_closure *mc = v;
+    struct command_status cstmp;
+    ssize_t n;
+    debug_decl(mon_backchannel_cb, SUDO_DEBUG_EXEC);
+
+    /* read command from backchannel, should be a signal */
+    n = recv(fd, &cstmp, sizeof(cstmp), MSG_WAITALL);
+    if (n != sizeof(cstmp)) {
+	if (n == -1) {
+	    if (errno == EINTR || errno == EAGAIN)
+		debug_return;
+	    warning(U_("error reading from socketpair"));
+	} else {
+	    /* short read or EOF, parent process died? */
+	}
+	sudo_ev_loopbreak(mc->evbase);
+    } else {
+	if (cstmp.type == CMD_SIGNO) {
+	    deliver_signal(cmnd_pid, cstmp.val, true);
+	} else {
+	    warningx(U_("unexpected reply type on backchannel: %d"), cstmp.type);
+	}
+    }
+    debug_return;
+}
+
 /*
  * Monitor process that creates a new session with the controlling tty,
  * resets signal handlers and forks a child to call exec_pty().
@@ -952,12 +1160,10 @@ static int
 exec_monitor(struct command_details *details, int backchannel)
 {
     struct command_status cstat;
-    struct timeval tv;
-    fd_set *fdsr;
+    struct sudo_event_base *evbase;
+    struct monitor_closure mc;
     sigaction_t sa;
-    int errpipe[2], maxfd, n, status;
-    bool alive = true;
-    unsigned char signo;
+    int errpipe[2], n;
     debug_decl(exec_monitor, SUDO_DEBUG_EXEC);
 
     /* Close unused fds. */
@@ -968,25 +1174,28 @@ exec_monitor(struct command_details *details, int backchannel)
 
     /*
      * We use a pipe to atomically handle signal notification within
-     * the select() loop.
+     * the event loop.
      */
     if (pipe_nonblock(signal_pipe) != 0)
-	error(1, _("unable to create pipe"));
+	fatal(U_("unable to create pipe"));
 
     /* Reset SIGWINCH and SIGALRM. */
-    zero_bytes(&sa, sizeof(sa));
+    memset(&sa, 0, sizeof(sa));
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
     sa.sa_handler = SIG_DFL;
-    sigaction(SIGWINCH, &sa, NULL);
-    sigaction(SIGALRM, &sa, NULL);
+    sudo_sigaction(SIGWINCH, &sa, NULL);
+    sudo_sigaction(SIGALRM, &sa, NULL);
 
     /* Ignore any SIGTTIN or SIGTTOU we get. */
     sa.sa_handler = SIG_IGN;
-    sigaction(SIGTTIN, &sa, NULL);
-    sigaction(SIGTTOU, &sa, NULL);
+    sudo_sigaction(SIGTTIN, &sa, NULL);
+    sudo_sigaction(SIGTTOU, &sa, NULL);
 
-    /* Note: HP-UX select() will not be interrupted if SA_RESTART set */
+    /* Block all signals in mon_handler(). */
+    sigfillset(&sa.sa_mask);
+
+    /* Note: HP-UX poll() will not be interrupted if SA_RESTART is set. */
     sa.sa_flags = SA_INTERRUPT;
 #ifdef SA_SIGINFO
     sa.sa_flags |= SA_SIGINFO;
@@ -994,7 +1203,7 @@ exec_monitor(struct command_details *details, int backchannel)
 #else
     sa.sa_handler = mon_handler;
 #endif
-    sigaction(SIGCHLD, &sa, NULL);
+    sudo_sigaction(SIGCHLD, &sa, NULL);
 
     /* Catch common signals so we can cleanup properly. */
     sa.sa_flags = SA_RESTART;
@@ -1004,13 +1213,13 @@ exec_monitor(struct command_details *details, int backchannel)
 #else
     sa.sa_handler = mon_handler;
 #endif
-    sigaction(SIGHUP, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGQUIT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGTSTP, &sa, NULL);
-    sigaction(SIGUSR1, &sa, NULL);
-    sigaction(SIGUSR2, &sa, NULL);
+    sudo_sigaction(SIGHUP, &sa, NULL);
+    sudo_sigaction(SIGINT, &sa, NULL);
+    sudo_sigaction(SIGQUIT, &sa, NULL);
+    sudo_sigaction(SIGTERM, &sa, NULL);
+    sudo_sigaction(SIGTSTP, &sa, NULL);
+    sudo_sigaction(SIGUSR1, &sa, NULL);
+    sudo_sigaction(SIGUSR2, &sa, NULL);
 
     /*
      * Start a new session with the parent as the session leader
@@ -1024,13 +1233,15 @@ exec_monitor(struct command_details *details, int backchannel)
     if (io_fds[SFD_SLAVE] != -1) {
 #ifdef TIOCSCTTY
 	if (ioctl(io_fds[SFD_SLAVE], TIOCSCTTY, NULL) != 0)
-	    error(1, _("unable to set controlling tty"));
+	    fatal(U_("unable to set controlling tty"));
 #else
 	/* Set controlling tty by reopening slave. */
 	if ((n = open(slavename, O_RDWR)) >= 0)
 	    close(n);
 #endif
     }
+
+    mon_pgrp = getpgrp();	/* save a copy of our process group */
 
     /*
      * If stdin/stdout is not a tty, start command in the background
@@ -1043,10 +1254,10 @@ exec_monitor(struct command_details *details, int backchannel)
 
     /* Start command and wait for it to stop or exit */
     if (pipe(errpipe) == -1)
-	error(1, _("unable to create pipe"));
+	fatal(U_("unable to create pipe"));
     cmnd_pid = sudo_debug_fork();
     if (cmnd_pid == -1) {
-	warning(_("unable to fork"));
+	warning(U_("unable to fork"));
 	goto bad;
     }
     if (cmnd_pid == 0) {
@@ -1059,9 +1270,7 @@ exec_monitor(struct command_details *details, int backchannel)
 	restore_signals();
 
 	/* setup tty and exec command */
-	exec_pty(details, &errpipe[1]);
-	cstat.type = CMD_ERRNO;
-	cstat.val = errno;
+	exec_pty(details, &cstat, errpipe[1]);
 	ignore_result(write(errpipe[1], &cstat, sizeof(cstat)));
 	_exit(1);
     }
@@ -1080,100 +1289,62 @@ exec_monitor(struct command_details *details, int backchannel)
     if (io_fds[SFD_STDERR] != io_fds[SFD_SLAVE])
 	close(io_fds[SFD_STDERR]);
 
-    /*
-     * Put command in its own process group.  If we are starting the command
-     * in the foreground, assign its pgrp to the tty.
-     */
+    /* Put command in its own process group. */
     cmnd_pgrp = cmnd_pid;
     setpgid(cmnd_pid, cmnd_pgrp);
-    if (foreground) {
+
+    /* Make the command the foreground process for the pty slave. */
+    if (foreground && !ISSET(details->flags, CD_EXEC_BG)) {
 	do {
-	    status = tcsetpgrp(io_fds[SFD_SLAVE], cmnd_pgrp);
-	} while (status == -1 && errno == EINTR);
+	    n = tcsetpgrp(io_fds[SFD_SLAVE], cmnd_pgrp);
+	} while (n == -1 && errno == EINTR);
     }
 
-    /* Wait for errno on pipe, signal on backchannel or for SIGCHLD */
-    maxfd = MAX(MAX(errpipe[0], signal_pipe[0]), backchannel);
-    fdsr = ecalloc(howmany(maxfd + 1, NFDBITS), sizeof(fd_mask));
+    /*
+     * Create new event base and register read events for the
+     * signal pipe, error pipe, and backchannel.
+     */
+    evbase = sudo_ev_base_alloc();
+    if (evbase == NULL)
+	fatal(NULL);
+
     memset(&cstat, 0, sizeof(cstat));
-    tv.tv_sec = 0;
-    tv.tv_usec = 0;
-    for (;;) {
-	/* Check for signal on backchannel or errno on errpipe. */
-	FD_SET(backchannel, fdsr);
-	FD_SET(signal_pipe[0], fdsr);
-	if (errpipe[0] != -1)
-	    FD_SET(errpipe[0], fdsr);
-	maxfd = MAX(MAX(errpipe[0], signal_pipe[0]), backchannel);
+    mc.cstat = &cstat;
+    mc.evbase = evbase;
+    mc.backchannel = backchannel;
+    mc.alive = true;
 
-	/* If command exited we just poll, there may be data on errpipe. */
-	n = select(maxfd + 1, fdsr, NULL, NULL, alive ? NULL : &tv);
-	if (n <= 0) {
-	    if (n == 0)
-		goto done;
-	    if (errno == EINTR || errno == ENOMEM)
-		continue;
-	    warning("monitor: %s", _("select failed"));
-	    break;
-	}
+    mc.signal_pipe_event = sudo_ev_alloc(signal_pipe[0],
+	SUDO_EV_READ|SUDO_EV_PERSIST, mon_signal_pipe_cb, &mc);
+    if (mc.signal_pipe_event == NULL)
+	fatal(NULL);
+    if (sudo_ev_add(evbase, mc.signal_pipe_event, NULL, false) == -1)
+	fatal(U_("unable to add event to queue"));
 
-	if (FD_ISSET(signal_pipe[0], fdsr)) {
-	    n = read(signal_pipe[0], &signo, sizeof(signo));
-	    if (n == -1) {
-		if (errno == EINTR || errno == EAGAIN)
-		    continue;
-		warning(_("error reading from signal pipe"));
-		goto done;
-	    }
-	    /*
-	     * Handle SIGCHLD specially and deliver other signals
-	     * directly to the command.
-	     */
-	    if (signo == SIGCHLD) {
-		if (!handle_sigchld(backchannel, &cstat))
-		    alive = false;
-	    } else {
-		deliver_signal(cmnd_pid, signo, false);
-	    }
-	    continue;
-	}
-	if (errpipe[0] != -1 && FD_ISSET(errpipe[0], fdsr)) {
-	    /* read errno or EOF from command pipe */
-	    n = read(errpipe[0], &cstat, sizeof(cstat));
-	    if (n == -1) {
-		if (errno == EINTR)
-		    continue;
-		warning(_("error reading from pipe"));
-		goto done;
-	    }
-	    /* Got errno or EOF, either way we are done with errpipe. */
-	    FD_CLR(errpipe[0], fdsr);
-	    close(errpipe[0]);
-	    errpipe[0] = -1;
-	}
-	if (FD_ISSET(backchannel, fdsr)) {
-	    struct command_status cstmp;
+    mc.errpipe_event = sudo_ev_alloc(errpipe[0],
+	SUDO_EV_READ|SUDO_EV_PERSIST, mon_errpipe_cb, &mc);
+    if (mc.errpipe_event == NULL)
+	fatal(NULL);
+    if (sudo_ev_add(evbase, mc.errpipe_event, NULL, false) == -1)
+	fatal(U_("unable to add event to queue"));
 
-	    /* read command from backchannel, should be a signal */
-	    n = recv(backchannel, &cstmp, sizeof(cstmp), 0);
-	    if (n == -1) {
-		if (errno == EINTR)
-		    continue;
-		warning(_("error reading from socketpair"));
-		goto done;
-	    }
-	    if (cstmp.type != CMD_SIGNO) {
-		warningx(_("unexpected reply type on backchannel: %d"),
-		    cstmp.type);
-		continue;
-	    }
-	    deliver_signal(cmnd_pid, cstmp.val, true);
-	}
-    }
+    mc.backchannel_event = sudo_ev_alloc(backchannel,
+	SUDO_EV_READ|SUDO_EV_PERSIST, mon_backchannel_cb, &mc);
+    if (mc.backchannel_event == NULL)
+	fatal(NULL);
+    if (sudo_ev_add(evbase, mc.backchannel_event, NULL, false) == -1)
+	fatal(U_("unable to add event to queue"));
 
-done:
-    if (alive) {
-	/* XXX An error occurred, should send an error back. */
+    /*
+     * Wait for errno on pipe, signal on backchannel or for SIGCHLD.
+     * The event loop ends when the child is no longer running and
+     * the error pipe is closed.
+     */
+    (void) sudo_ev_loop(evbase, 0);
+    if (mc.alive) {
+	/* XXX An error occurred, should send a message back. */
+	sudo_debug_printf(SUDO_DEBUG_ERROR,
+	    "Command still running after event loop exit, sending SIGKILL");
 	kill(cmnd_pid, SIGKILL);
     } else {
 	/* Send parent status. */
@@ -1187,89 +1358,18 @@ bad:
 }
 
 /*
- * Flush any output buffered in iobufs or readable from the fds.
- * Does not read from /dev/tty.
- */
-static void
-flush_output(void)
-{
-    struct io_buffer *iob;
-    struct timeval tv;
-    fd_set *fdsr, *fdsw;
-    int nready, nwriters, maxfd = -1;
-    debug_decl(flush_output, SUDO_DEBUG_EXEC);
-
-    /* Determine maxfd */
-    for (iob = iobufs; iob; iob = iob->next) {
-	if (iob->rfd > maxfd)
-	    maxfd = iob->rfd;
-	if (iob->wfd > maxfd)
-	    maxfd = iob->wfd;
-    }
-    if (maxfd == -1)
-	debug_return;
-
-    fdsr = emalloc2(howmany(maxfd + 1, NFDBITS), sizeof(fd_mask));
-    fdsw = emalloc2(howmany(maxfd + 1, NFDBITS), sizeof(fd_mask));
-    for (;;) {
-	memset(fdsw, 0, howmany(maxfd + 1, NFDBITS) * sizeof(fd_mask));
-	memset(fdsr, 0, howmany(maxfd + 1, NFDBITS) * sizeof(fd_mask));
-
-	nwriters = 0;
-	for (iob = iobufs; iob; iob = iob->next) {
-	    /* Don't read from /dev/tty while flushing. */
-	    if (io_fds[SFD_USERTTY] != -1 && iob->rfd == io_fds[SFD_USERTTY])
-		continue;
-	    if (iob->rfd == -1 && iob->wfd == -1)
-	    	continue;
-	    if (iob->off == iob->len) {
-		iob->off = iob->len = 0;
-		/* Forward the EOF from reader to writer. */
-		if (iob->rfd == -1) {
-		    safe_close(iob->wfd);
-		    iob->wfd = -1;
-		}
-	    }
-	    if (iob->rfd != -1) {
-		if (iob->len != sizeof(iob->buf))
-		    FD_SET(iob->rfd, fdsr);
-	    }
-	    if (iob->wfd != -1) {
-		if (iob->len > iob->off) {
-		    nwriters++;
-		    FD_SET(iob->wfd, fdsw);
-		}
-	    }
-	}
-
-	/* Don't sleep in select if there are no buffers that need writing. */
-	tv.tv_sec = 0;
-	tv.tv_usec = 0;
-	nready = select(maxfd + 1, fdsr, fdsw, NULL, nwriters ? NULL : &tv);
-	if (nready <= 0) {
-	    if (nready == 0)
-		break; /* all I/O flushed */
-	    if (errno == EINTR || errno == ENOMEM)
-		continue;
-	    warning(_("select failed"));
-	}
-	if (perform_io(fdsr, fdsw, NULL) != 0 || nready == -1)
-	    break;
-    }
-    efree(fdsr);
-    efree(fdsw);
-    debug_return;
-}
-
-/*
  * Sets up std{in,out,err} and executes the actual command.
  * Returns only if execve() fails.
  */
 static void
-exec_pty(struct command_details *details, int *errfd)
+exec_pty(struct command_details *details,
+    struct command_status *cstat, int errfd)
 {
     pid_t self = getpid();
     debug_decl(exec_pty, SUDO_DEBUG_EXEC);
+
+    /* Register cleanup function */
+    fatal_callback_register(pty_cleanup);
 
     /* Set command process group here too to avoid a race. */
     setpgid(0, self);
@@ -1278,10 +1378,10 @@ exec_pty(struct command_details *details, int *errfd)
     if (dup2(io_fds[SFD_STDIN], STDIN_FILENO) == -1 ||
 	dup2(io_fds[SFD_STDOUT], STDOUT_FILENO) == -1 ||
 	dup2(io_fds[SFD_STDERR], STDERR_FILENO) == -1)
-	error(1, "dup2");
+	fatal("dup2");
 
     /* Wait for parent to grant us the tty if we are foreground. */
-    if (foreground) {
+    if (foreground && !ISSET(details->flags, CD_EXEC_BG)) {
 	while (tcgetpgrp(io_fds[SFD_SLAVE]) != self)
 	    ; /* spin */
     }
@@ -1296,30 +1396,9 @@ exec_pty(struct command_details *details, int *errfd)
     if (io_fds[SFD_STDERR] != io_fds[SFD_SLAVE])
 	close(io_fds[SFD_STDERR]);
 
-    sudo_debug_execve(SUDO_DEBUG_INFO, details->command,
-	details->argv, details->envp);
+    /* Execute command; only returns on error. */
+    exec_cmnd(details, cstat, errfd);
 
-    if (details->closefrom >= 0) {
-	int maxfd = details->closefrom;
-	dup2(*errfd, maxfd);
-	(void)fcntl(maxfd, F_SETFD, FD_CLOEXEC);
-	*errfd = maxfd++;
-	if (sudo_debug_fd_set(maxfd) != -1)
-	    maxfd++;
-	closefrom(maxfd);
-    }
-#ifdef HAVE_SELINUX
-    if (ISSET(details->flags, CD_RBAC_ENABLED)) {
-	selinux_execve(details->command, details->argv, details->envp,
-	    ISSET(details->flags, CD_NOEXEC));
-    } else
-#endif
-    {
-	sudo_execve(details->command, details->argv, details->envp,
-	    ISSET(details->flags, CD_NOEXEC));
-    }
-    sudo_debug_printf(SUDO_DEBUG_ERROR, "unable to exec %s: %s",
-	details->command, strerror(errno));
     debug_return;
 }
 
@@ -1357,8 +1436,44 @@ sigwinch(int s)
 }
 
 /*
+ * Remove and free any events associated with the specified
+ * file descriptor present in the I/O buffers list.
+ */
+static void
+ev_free_by_fd(struct sudo_event_base *evbase, int fd)
+{
+    struct io_buffer *iob;
+    debug_decl(ev_free_by_fd, SUDO_DEBUG_EXEC);
+
+    /* Deschedule any users of the fd and free up the events. */
+    SLIST_FOREACH(iob, &iobufs, entries) {
+	if (iob->revent != NULL) {
+	    if (sudo_ev_get_fd(iob->revent) == fd) {
+		sudo_debug_printf(SUDO_DEBUG_INFO,
+		    "%s: deleting and freeing revent %p with fd %d",
+		    __func__, iob->revent, fd);
+		sudo_ev_del(evbase, iob->revent);
+		sudo_ev_free(iob->revent);
+		iob->revent = NULL;
+	    }
+	}
+	if (iob->wevent != NULL) {
+	    if (sudo_ev_get_fd(iob->wevent) == fd) {
+		sudo_debug_printf(SUDO_DEBUG_INFO,
+		    "%s: deleting and freeing wevent %p with fd %d",
+		    __func__, iob->wevent, fd);
+		sudo_ev_del(evbase, iob->wevent);
+		sudo_ev_free(iob->wevent);
+		iob->wevent = NULL;
+	    }
+	}
+    }
+    debug_return;
+}
+
+/*
  * Only close the fd if it is not /dev/tty or std{in,out,err}.
- * Return value is the same as send(2).
+ * Return value is the same as close(2).
  */
 static int
 safe_close(int fd)
@@ -1367,8 +1482,11 @@ safe_close(int fd)
 
     /* Avoid closing /dev/tty or std{in,out,err}. */
     if (fd < 3 || fd == io_fds[SFD_USERTTY]) {
+	sudo_debug_printf(SUDO_DEBUG_INFO,
+	    "%s: not closing fd %d (/dev/tty)", __func__, fd);
 	errno = EINVAL;
 	debug_return_int(-1);
     }
+    sudo_debug_printf(SUDO_DEBUG_INFO, "%s: closing fd %d", __func__, fd);
     debug_return_int(close(fd));
 }

@@ -1,6 +1,6 @@
 .\"
-.\" Copyright (c) 1994-1996, 1998-2005, 2007-2012
-.\" Todd C. Miller <Todd.Miller@courtesan.com>
+.\" Copyright (c) 1994-1996, 1998-2005, 2007-2014
+.\"	Todd C. Miller <Todd.Miller@courtesan.com>
 .\"
 .\" Permission to use, copy, modify, and distribute this software for any
 .\" purpose with or without fee is hereby granted, provided that the above
@@ -19,16 +19,16 @@
 .\" Agency (DARPA) and Air Force Research Laboratory, Air Force
 .\" Materiel Command, USAF, under agreement number F39502-99-1-0512.
 .\"
-.Dd July 16, 2012
+.Dd February 15, 2014
 .Dt SUDOERS @mansectform@
 .Os Sudo @PACKAGE_VERSION@
 .Sh NAME
 .Nm sudoers
-.Nd default sudo security policy module
+.Nd default sudo security policy plugin
 .Sh DESCRIPTION
 The
 .Em sudoers
-policy module determines a user's
+policy plugin determines a user's
 .Nm sudo
 privileges.
 It is the default
@@ -46,6 +46,84 @@ For information on storing
 policy information
 in LDAP, please see
 .Xr sudoers.ldap @mansectform@ .
+.Ss Configuring sudo.conf for sudoers
+.Nm sudo
+consults the
+.Xr sudo.conf @mansectform@
+file to determine which policy and and I/O logging plugins to load.
+If no
+.Xr sudo.conf @mansectform@
+file is present, or if it contains no
+.Li Plugin
+lines,
+.Nm sudoers
+will be used for policy decisions and I/O logging.
+To explicitly configure
+.Xr sudo.conf @mansectform@
+to use the
+.Nm sudoers
+plugin, the following configuration can be used.
+.Bd -literal -offset indent
+Plugin sudoers_policy sudoers.so
+Plugin sudoers_io sudoers.so
+.Ed
+.Pp
+Starting with
+.Nm sudo
+1.8.5, it is possible to specify optional arguments to the
+.Nm sudoers
+plugin in the
+.Xr sudo.conf @mansectform@
+file.
+These arguments, if present, should be listed after the path to the plugin
+(i.e.\& after
+.Pa sudoers.so ) .
+Multiple arguments may be specified, separated by white space.
+For example:
+.Bd -literal -offset indent
+Plugin sudoers_policy sudoers.so sudoers_mode=0400
+.Ed
+.Pp
+The following plugin arguments are supported:
+.Bl -tag -width 8n
+.It ldap_conf=pathname
+The
+.Em ldap_conf
+argument can be used to override the default path to the
+.Pa ldap.conf
+file.
+.It ldap_secret=pathname
+The
+.Em ldap_secret
+argument can be used to override the default path to the
+.Pa ldap.secret
+file.
+.It sudoers_file=pathname
+The
+.Em sudoers_file
+argument can be used to override the default path to the
+.Em sudoers
+file.
+.It sudoers_uid=uid
+The
+.Em sudoers_uid
+argument can be used to override the default owner of the sudoers file.
+It should be specified as a numeric user ID.
+.It sudoers_gid=gid
+The
+.Em sudoers_gid
+argument can be used to override the default group of the sudoers file.
+It must be specified as a numeric group ID (not a group name).
+.It sudoers_mode=mode
+The
+.Em sudoers_mode
+argument can be used to override the default file mode for the sudoers file.
+It should be specified as an octal value.
+.El
+.Pp
+For more information on configuring
+.Xr sudo.conf @mansectform@ ,
+please refer to its manual.
 .Ss Authentication and logging
 The
 .Em sudoers
@@ -116,10 +194,14 @@ lookup is still done for root, not the user specified by
 .Ev SUDO_USER .
 .Pp
 .Em sudoers
-uses time stamp files for credential caching.
-Once a
-user has been authenticated, the time stamp is updated and the user
-may then use sudo without a password for a short period of time
+uses per-user time stamp files for credential caching.
+Once a user has been authenticated, a record is written
+containing the uid that was used to authenticate, the
+terminal session ID, and a time stamp
+(using a monotonic clock if one is available).
+The user may then use
+.Nm sudo
+without a password for a short period of time
 .Po
 .Li @timeout@
 minutes unless overridden by the
@@ -128,8 +210,8 @@ option
 .Pc .
 By default,
 .Em sudoers
-uses a tty-based time stamp which means that
-there is a separate time stamp for each of a user's login sessions.
+uses a separate record for each tty, which means that
+a user's login sessions are authenticated separately.
 The
 .Em tty_tickets
 option can be disabled to force the use of a
@@ -266,7 +348,7 @@ and, as such, it is not possible for
 to preserve them.
 .Pp
 As a special case, if
-.Nm sudo Ns No 's
+.Nm sudo Ns 's
 .Fl i
 option (initial login) is
 specified,
@@ -437,10 +519,10 @@ User ::= '!'* user name |
 .Pp
 A
 .Li User_List
-is made up of one or more user names, user ids
+is made up of one or more user names, user IDs
 (prefixed with
 .Ql # ) ,
-system group names and ids (prefixed with
+system group names and IDs (prefixed with
 .Ql %
 and
 .Ql %#
@@ -451,7 +533,7 @@ non-Unix group names and IDs (prefixed with
 and
 .Ql %:#
 respectively) and
-.Li User_Alias Ns No es.
+.Li User_Alias Ns es.
 Each list item may be prefixed with zero or more
 .Ql \&!
 operators.
@@ -482,9 +564,7 @@ The actual
 and
 .Li nonunix_gid
 syntax depends on
-the underlying group provider plugin (see the
-.Em group_plugin
-description below).
+the underlying group provider plugin.
 For instance, the QAS AD plugin supports the following formats:
 .Bl -bullet -width 4n
 .It
@@ -494,6 +574,10 @@ Group in any domain: "%:Group Name@FULLY.QUALIFIED.DOMAIN"
 .It
 Group SID: "%:S-1-2-34-5678901234-5678901234-5678901234-567"
 .El
+.Pp
+See
+.Sx "GROUP PROVIDER PLUGINS"
+for more information.
 .Pp
 Note that quotes around group names are optional.
 Unquoted strings must use a backslash
@@ -523,9 +607,9 @@ is similar to a
 .Li User_List
 except that instead
 of
-.Li User_Alias Ns No es
+.Li User_Alias Ns es
 it can contain
-.Li Runas_Alias Ns No es .
+.Li Runas_Alias Ns es .
 Note that
 user names and groups are matched as strings.
 In other words, two
@@ -579,6 +663,14 @@ Also, the host name
 will only match if that is the actual host name, which is usually
 only the case for non-networked systems.
 .Bd -literal
+digest ::= [A-Fa-f0-9]+ |
+	   [[A-Za-z0-9\+/=]+
+
+Digest_Spec ::= "sha224" ':' digest |
+		"sha256" ':' digest |
+		"sha384" ':' digest |
+		"sha512" ':' digest
+
 Cmnd_List ::= Cmnd |
               Cmnd ',' Cmnd_List
 
@@ -586,7 +678,7 @@ command name ::= file name |
                  file name args |
                  file name '""'
 
-Cmnd ::= '!'* command name |
+Cmnd ::= Digest_Spec? '!'* command name |
          '!'* directory |
          '!'* "sudoedit" |
          '!'* Cmnd_Alias
@@ -631,7 +723,7 @@ if they are used in command arguments:
 .Ql :\& ,
 .Ql =\& ,
 .Ql \e .
-The special command
+The built-in command
 .Dq Li sudoedit
 is used to permit a user to run
 .Nm sudo
@@ -640,6 +732,42 @@ with the
 option (or as
 .Nm sudoedit ) .
 It may take command line arguments just as a normal command does.
+Note that
+.Dq Li sudoedit
+is a command built into
+.Nm sudo
+itself and must be specified in
+.Em sudoers
+without a leading path.
+.Pp
+If a
+.Li command name
+is prefixed with a
+.Li Digest_Spec ,
+the command will only match successfully if it can be verified
+using the specified SHA-2 digest.
+This may be useful in situations where the user invoking
+.Nm sudo
+has write access to the command or its parent directory.
+The following digest formats are supported: sha224, sha256, sha384 and sha512.
+The string may be specified in either hex or base64 format
+(base64 is more compact).
+There are several utilities capable of generating SHA-2 digests in hex
+format such as openssl, shasum, sha224sum, sha256sum, sha384sum, sha512sum.
+.Pp
+For example, using openssl:
+.Bd -literal
+$ openssl dgst -sha224 /bin/ls
+SHA224(/bin/ls)= 118187da8364d490b4a7debbf483004e8f3e053ec954309de2c41a25
+.Ed
+.Pp
+It is also possible to use openssl to generate base64 output:
+.Bd -literal
+$ openssl dgst -binary -sha224 /bin/ls | openssl base64
+EYGH2oNk1JC0p9679IMATo8+BT7JVDCd4sQaJQ==
+.Ed
+.Pp
+Command digests are only supported by version 1.8.7 or higher.
 .Ss Defaults
 Certain configuration options may be changed from their default
 values at run-time via one or more
@@ -747,7 +875,7 @@ may be run as.
 A fully-specified
 .Li Runas_Spec
 consists of two
-.Li Runas_List Ns No s
+.Li Runas_List Ns s
 (as defined above) separated by a colon
 .Pq Ql :\&
 and enclosed in a set of parentheses.
@@ -755,18 +883,18 @@ The first
 .Li Runas_List
 indicates
 which users the command may be run as via
-.Nm sudo Ns No 's
+.Nm sudo Ns 's
 .Fl u
 option.
 The second defines a list of groups that can be specified via
-.Nm sudo Ns No 's
+.Nm sudo Ns 's
 .Fl g
 option.
 If both
-.Li Runas_List Ns No s
+.Li Runas_List Ns s
 are specified, the command may be run with any combination of users
 and groups listed in their respective
-.Li Runas_List Ns No s.
+.Li Runas_List Ns s.
 If only the first is specified, the command may be run as any user
 in the list but no
 .Fl g
@@ -779,7 +907,7 @@ second is specified, the command may be run as the invoking user
 with the group set to any listed in the
 .Li Runas_List .
 If both
-.Li Runas_List Ns No s
+.Li Runas_List Ns s
 are empty, the command may only be run as the invoking user.
 If no
 .Li Runas_Spec
@@ -802,7 +930,7 @@ may run
 .Pa /bin/ls ,
 .Pa /bin/kill ,
 and
-.Pa /usr/bin/lprm Ns No \(em Ns but
+.Pa /usr/bin/lprm Ns \(em Ns but
 only as
 .Sy operator .
 E.g.,
@@ -959,7 +1087,7 @@ and
 Once a tag is set on a
 .Li Cmnd ,
 subsequent
-.Li Cmnd Ns No s
+.Li Cmnd Ns s
 in the
 .Li Cmnd_Spec_List ,
 inherit the tag unless it is overridden by the opposite tag (in other words,
@@ -970,9 +1098,9 @@ and
 .Li NOEXEC
 overrides
 .Li EXEC ) .
-.Pp
-.Em NOPASSWD and PASSWD
-.Pp
+.Bl -hang -width 0n
+.It Em NOPASSWD No and Em PASSWD
+.sp
 By default,
 .Nm sudo
 requires that a user authenticate him or herself
@@ -1037,9 +1165,8 @@ This behavior may be overridden via the
 and
 .Em listpw
 options.
-.Pp
-.Em NOEXEC and EXEC
-.Pp
+.It Em NOEXEC No and Em EXEC
+.sp
 If
 .Nm sudo
 has been compiled with
@@ -1065,9 +1192,8 @@ See the
 section below for more details on how
 .Li NOEXEC
 works and whether or not it will work on your system.
-.Pp
-.Em SETENV and NOSETENV
-.Pp
+.It Em SETENV No and Em NOSETENV
+.sp
 These tags override the value of the
 .Em setenv
 option on a per-command basis.
@@ -1092,9 +1218,8 @@ the
 tag is implied for that command; this default may be overridden by use of the
 .Li NOSETENV
 tag.
-.Pp
-.Em LOG_INPUT and NOLOG_INPUT
-.Pp
+.It Em LOG_INPUT No and Em NOLOG_INPUT
+.sp
 These tags override the value of the
 .Em log_input
 option on a per-command basis.
@@ -1103,9 +1228,8 @@ For more information, see the description of
 in the
 .Sx SUDOERS OPTIONS
 section below.
-.Pp
-.Em LOG_OUTPUT and NOLOG_OUTPUT
-.Pp
+.It Em LOG_OUTPUT No and Em NOLOG_OUTPUT
+.sp
 These tags override the value of the
 .Em log_output
 option on a per-command basis.
@@ -1114,6 +1238,7 @@ For more information, see the description of
 in the
 .Sx SUDOERS OPTIONS
 section below.
+.El
 .Ss Wildcards
 .Nm sudo
 allows shell-style
@@ -1123,11 +1248,11 @@ to be used in host names, path names and command line arguments in the
 .Em sudoers
 file.
 Wildcard matching is done via the
-.Sy POSIX
 .Xr glob 3
 and
 .Xr fnmatch 3
-routines.
+functions as specified by
+.St -p1003.1 .
 Note that these are
 .Em not
 regular expressions.
@@ -1155,7 +1280,7 @@ and
 .Ql ]\& .
 .El
 .Pp
-POSIX character classes may also be used if your system's
+Character classes may also be used if your system's
 .Xr glob 3
 and
 .Xr fnmatch 3
@@ -1168,7 +1293,7 @@ it must be
 escaped.
 For example:
 .Bd -literal -offset 4n
-/bin/ls [[\:alpha\:]]*
+/bin/ls [[:\&alpha:\&]]*
 .Ed
 .Pp
 Would match any file name beginning with a letter.
@@ -1393,11 +1518,31 @@ An exclamation point
 .Pq Ql \&!
 can be used as a logical
 .Em not
-operator both in an
+operator in a list or
 .Em alias
-and in front of a
+as well as in front of a
 .Li Cmnd .
 This allows one to exclude certain values.
+For the
+.Ql \&!
+operator to be effective, there must be something for it to exclude.
+For example, to match all users except for root one would use:
+.Bd -literal -offset 4n
+ALL,!root
+.Ed
+.Pp
+If the
+.Sy ALL ,
+is omitted, as in:
+.Bd -literal -offset 4n
+!root
+.Ed
+.Pp
+it would explicitly deny root but not match any other users.
+This is different from a true
+.Dq negation
+operator.
+.Pp
 Note, however, that using a
 .Ql \&!
 in conjunction with the built-in
@@ -1434,7 +1579,7 @@ when used as part of a word (e.g.\& a user name or host name):
 .Ql )\& ,
 .Ql \e .
 .Sh SUDOERS OPTIONS
-.Nm sudo Ns No 's
+.Nm sudo Ns 's
 behavior can be modified by
 .Li Default_Entry
 lines, as explained earlier.
@@ -1456,7 +1601,7 @@ This effectively means that the
 option is always implied.
 Note that
 .Ev HOME
-is already set when the the
+is already set when the
 .Em env_reset
 option is enabled, so
 .Em always_set_home
@@ -1483,7 +1628,7 @@ This flag is
 by default.
 .It closefrom_override
 If set, the user may use
-.Nm sudo Ns No 's
+.Nm sudo Ns 's
 .Fl C
 option which overrides the default starting point at which
 .Nm sudo
@@ -1504,6 +1649,74 @@ by default when
 is compiled with
 .Sy zlib
 support.
+.It use_netgroups
+If set, netgroups (prefixed with
+.Ql + ) ,
+may be used in place of a user or host.
+For LDAP-based sudoers, netgroup support requires an expensive
+substring match on the server.
+If netgroups are not needed, this option can be disabled to reduce the
+load on the LDAP server.
+This flag is
+.Em on
+by default.
+.It exec_background
+By default,
+.Nm sudo
+runs a command as the foreground process as long as
+.Nm sudo
+itself is running in the foreground.
+When the
+.Em exec_background
+flag is enabled and the command is being run in a pty (due to I/O logging
+or the
+.Em use_pty
+flag), the command will be run as a background process.
+Attempts to read from the controlling terminal (or to change terminal
+settings) will result in the command being suspended with the
+.Dv SIGTTIN
+signal (or
+.Dv SIGTTOU
+in the case of terminal settings).
+If this happens when
+.Nm sudo
+is a foreground process, the command will be granted the controlling terminal
+and resumed in the foreground with no user intervention required.
+The advantage of initially running the command in the background is that
+.Nm sudo
+need not read from the terminal unless the command explicitly requests it.
+Otherwise, any terminal input must be passed to the command, whether it
+has required it or not (the kernel buffers terminals so it is not possible
+to tell whether the command really wants the input).
+This is different from historic
+.Em sudo
+behavior or when the command is not being run in a pty.
+.Pp
+For this to work seamlessly, the operating system must support the
+automatic restarting of system calls.
+Unfortunately, not all operating systems do this by default,
+and even those that do may have bugs.
+For example, Mac OS X fails to restart the
+.Fn tcgetattr
+and
+.Fn tcsetattr
+system calls (this is a bug in Mac OS X).
+Furthermore, because this behavior depends on the command stopping with the
+.Dv SIGTTIN
+or
+.Dv SIGTTOU
+signals, programs that catch these signals and suspend themselves
+with a different signal (usually
+.Dv SIGTOP )
+will not be automatically foregrounded.
+Some versions of the linux
+.Xr su 1
+command behave this way.
+.Pp
+This setting is only supported by version 1.8.7 or higher.
+It has no effect unless I/O logging is enabled or the
+.Em use_pty
+flag is enabled.
 .It env_editor
 If set,
 .Nm visudo
@@ -1527,8 +1740,7 @@ if they match a value specified in
 .Li editor .
 This flag is
 .Em @env_editor@
-by
-default.
+by default.
 .It env_reset
 If set,
 .Nm sudo
@@ -1628,7 +1840,7 @@ If the system is configured to use the
 file in preference to DNS, the
 .Dq canonical
 host name may not be fully-qualified.
-The order that sources are queried for hosts name resolution
+The order that sources are queried for host name resolution
 is usually specified in the
 .Pa @nsswitch_conf@ ,
 .Pa @netsvc_conf@ ,
@@ -1872,6 +2084,64 @@ section at the end of this manual.
 This flag is
 .Em off
 by default.
+.It pam_session
+On systems that use PAM for authentication,
+.Nm sudo
+will create a new PAM session for the command to be run in.
+Disabling
+.Em pam_session
+may be needed on older PAM implementations or on operating systems where
+opening a PAM session changes the utmp or wtmp files.
+If PAM session support is disabled, resource limits may not be updated
+for the command being run.
+If
+.Em pam_session ,
+.Em pam_setcred ,
+and
+.Em use_pty
+are disabled and I/O logging has not been configured,
+.Nm sudo
+will execute the command directly instead of running it as a child
+process.
+This flag is
+.Em @pam_session@
+by default.
+.Pp
+This setting is only supported by version 1.8.7 or higher.
+.It pam_setcred
+On systems that use PAM for authentication,
+.Nm sudo
+will attempt to establish credentials for the target user by default,
+if supported by the underlying authentication system.
+One example of a credential is a Kerberos ticket.
+If
+.Em pam_session ,
+.Em pam_setcred ,
+and
+.Em use_pty
+are disabled and I/O logging has not been configured,
+.Nm sudo
+will execute the command directly instead of running it as a child
+process.
+This flag is
+.Em on
+by default.
+.Pp
+This setting is only supported by version 1.8.8 or higher.
+.It passprompt_override
+The password prompt specified by
+.Em passprompt
+will normally only be used if the password prompt provided by systems
+such as PAM matches the string
+.Dq Password: .
+If
+.Em passprompt_override
+is set,
+.Em passprompt
+will always be used.
+This flag is
+.Em off
+by default.
 .It path_info
 Normally,
 .Nm sudo
@@ -1888,20 +2158,6 @@ The disadvantage is that if the executable is simply not in the user's
 will tell the user that they are not allowed to run it, which can be confusing.
 This flag is
 .Em @path_info@
-by default.
-.It passprompt_override
-The password prompt specified by
-.Em passprompt
-will normally only be used if the password prompt provided by systems
-such as PAM matches the string
-.Dq Password: .
-If
-.Em passprompt_override
-is set,
-.Em passprompt
-will always be used.
-This flag is
-.Em off
 by default.
 .It preserve_groups
 By default,
@@ -1967,7 +2223,8 @@ by default.
 .It rootpw
 If set,
 .Nm sudo
-will prompt for the root password instead of the password of the invoking user.
+will prompt for the root password instead of the password of the invoking user
+when running a command or editing a file.
 This flag is
 .Em off
 by default.
@@ -1978,7 +2235,8 @@ will prompt for the password of the user defined by the
 .Em runas_default
 option (defaults to
 .Li @runas_default@ )
-instead of the password of the invoking user.
+instead of the password of the invoking user
+when running a command or editing a file.
 This flag is
 .Em off
 by default.
@@ -1999,7 +2257,7 @@ option imply
 .Fl H .
 Note that
 .Ev HOME
-is already set when the the
+is already set when the
 .Em env_reset
 option is enabled, so
 .Em set_home
@@ -2114,8 +2372,8 @@ by the
 .Fl u
 option (defaults to
 .Li root )
-instead of the password of the invoking user.
-In addition, the time stamp file name will include the target user's name.
+instead of the password of the invoking user
+when running a command or editing a file.
 Note that this flag precludes the use of a uid not listed in the passwd
 database as an argument to the
 .Fl u
@@ -2127,9 +2385,8 @@ by default.
 If set, users must authenticate on a per-tty basis.
 With this flag enabled,
 .Nm sudo
-will use a file named for the tty the user is
-logged in on in the user's time stamp directory.
-If disabled, the time stamp of the directory is used instead.
+will use a separate record in the time stamp file for each tty.
+If disabled, a single record is used for all login sessions.
 This flag is
 .Em @tty_tickets@
 by default.
@@ -2380,12 +2637,36 @@ escape sequences.
 .Pp
 In addition to the escape sequences, path names that end in six or
 more
-.Li X Ns No s
+.Li X Ns s
 will have the
-.Li X Ns No s
+.Li X Ns s
 replaced with a unique combination of digits and letters, similar to the
 .Xr mktemp 3
 function.
+.Pp
+If the path created by concatenating
+.Em iolog_dir
+and
+.Em iolog_file
+already exists, the existing I/O log file will be truncated and
+overwritten unless
+.Em iolog_file
+ends in six or
+more
+.Li X Ns s .
+.It lecture_status_dir
+The directory in which
+.Nm sudo
+stores per-user lecture status files.
+Once a user has received the lecture, a zero-length file is
+created in this directory so that
+.Nm sudo
+will not lecture the user again.
+This directory should
+.Em not
+be cleared when the system reboots.
+The default is
+.Pa @vardir@/lectured .
 .It limitprivs
 The default Solaris limit privileges to use when constructing a new
 privilege set for a command.
@@ -2404,11 +2685,63 @@ The escape
 will expand to the host name of the machine.
 Default is
 .Dq Li @mailsub@ .
+.It maxseq
+The maximum sequence number that will be substituted for the
+.Dq Li %{seq}
+escape in the I/O log file (see the
+.Em iolog_dir
+description above for more information).
+While the value substituted for
+.Dq Li %{seq}
+is in base 36,
+.Em maxseq
+itself should be expressed in decimal.
+Values larger than 2176782336 (which corresponds to the
+base 36 sequence number
+.Dq ZZZZZZ )
+will be silently truncated to 2176782336.
+The default value is 2176782336.
+.Pp
+Once the local sequence number reaches the value of
+.Em maxseq ,
+it will
+.Dq roll over
+to zero, after which
+.Nm sudoers
+will truncate and re-use any existing I/O log path names.
+.Pp
+This setting is only supported by version 1.8.7 or higher.
 .It noexec_file
-This option is no longer supported.
+As of
+.Nm sudo
+version 1.8.1 this option is no longer supported.
 The path to the noexec file should now be set in the
-.Pa @sysconfdir@/sudo.conf
+.Xr sudo.conf @mansectform@
 file.
+.It pam_login_service
+On systems that use PAM for authentication, this is the service
+name used when the
+.Fl i
+option is specified.
+The default value is
+.Dq Li @pam_login_service@ .
+See the description of
+.Em pam_service
+for more information.
+.Pp
+This setting is only supported by version 1.8.8 or higher.
+.It pam_service
+On systems that use PAM for authentication, the service name
+specifies the PAM policy to apply.
+This usually corresponds to an entry in the
+.Pa pam.conf
+file or a file in the
+.Pa /etc/pam.d
+directory.
+The default value is
+.Dq Li sudo .
+.Pp
+This setting is only supported by version 1.8.8 or higher.
 .It passprompt
 The default prompt to use when asking for a password; can be overridden via the
 .Fl p
@@ -2501,7 +2834,7 @@ Defaults to
 .Li @goodpri@ .
 .Pp
 See
-.Sx syslog_badpri
+.Em syslog_badpri
 for the list of supported syslog priorities.
 .It sudoers_locale
 Locale to use when parsing the sudoers file, logging commands, and
@@ -2513,10 +2846,12 @@ Defaults to
 The directory in which
 .Nm sudo
 stores its time stamp files.
+This directory should be cleared when the system reboots.
 The default is
-.Pa @timedir@ .
+.Pa @rundir@/ts .
 .It timestampowner
-The owner of the time stamp directory and the time stamps stored therein.
+The owner of the lecture status directory, time stamp directory and all
+files stored therein.
 The default is
 .Li root .
 .It type
@@ -2558,26 +2893,16 @@ This is not set by default.
 A string containing a
 .Em sudoers
 group plugin with optional arguments.
-This can be used to implement support for the
-.Li nonunix_group
-syntax described earlier.
 The string should consist of the plugin
 path, either fully-qualified or relative to the
-.Pa @prefix@/libexec
+.Pa @PLUGINDIR@
 directory, followed by any configuration arguments the plugin requires.
 These arguments (if any) will be passed to the plugin's initialization function.
 If arguments are present, the string must be enclosed in double quotes
 .Pq \&"" .
 .Pp
-For example, given
-.Pa /etc/sudo-group ,
-a group file in Unix group format, the sample group plugin can be used:
-.Bd -literal
-Defaults group_plugin="sample_group.so /etc/sudo-group"
-.Ed
-.Pp
 For more information see
-.Xr sudo_plugin @mansectform@ .
+.Xr "GROUP PROVIDER PLUGINS" .
 .It lecture
 This option controls when a short lecture will be printed along with
 the password prompt.
@@ -2825,7 +3150,7 @@ Environment variables to be preserved in the user's environment when the
 .Em env_reset
 option is in effect.
 This allows fine-grained control over the environment
-.Nm sudo Ns No -spawned
+.Nm sudo Ns -spawned
 processes will receive.
 The argument may be a double-quoted, space-separated list or a
 single value without double-quotes.
@@ -2843,6 +3168,61 @@ is run by root with the
 .Fl V
 option.
 .El
+.Sh GROUP PROVIDER PLUGINS
+The
+.Nm sudoers
+plugin supports its own plugin interface to allow non-Unix
+group lookups which can query a group source other
+than the standard Unix group database.
+This can be used to implement support for the
+.Li nonunix_group
+syntax described earlier.
+.Pp
+Group provider plugins are specified via the
+.Em group_plugin
+Defaults setting.
+The argument to
+.Em group_plugin
+should consist of the plugin path, either fully-qualified or relative to the
+.Pa @PLUGINDIR@
+directory, followed by any configuration options the plugin requires.
+These options (if specified) will be passed to the plugin's initialization
+function.
+If options are present, the string must be enclosed in double quotes
+.Pq \&"" .
+.Pp
+The following group provider plugins are installed by default:
+.Bl -tag -width 8n
+.It group_file
+The
+.Em group_file
+plugin supports an alternate group file that uses the same syntax as the
+.Pa /etc/group
+file.
+The path to the group file should be specified as an option
+to the plugin.
+For example, if the group file to be used is
+.Pa /etc/sudo-group :
+.Bd -literal
+Defaults group_plugin="group_file.so /etc/sudo-group"
+.Ed
+.It system_group
+The
+.Em system_group
+plugin supports group lookups via the standard C library functions
+.Fn getgrnam
+and
+.Fn getgrid .
+This plugin can be used in instances where the user belongs to
+groups not present in the user's supplemental group vector.
+This plugin takes no options:
+.Bd -literal
+Defaults group_plugin=system_group.so
+.Ed
+.El
+.Pp
+The group provider plugin API is described in detail in
+.Xr sudo_plugin @mansectsu@ .
 .Sh LOG FORMAT
 .Nm sudoers
 can log events using either
@@ -2948,7 +3328,7 @@ failed attempts and the value of the
 .Em passwd_tries
 option.
 .It a password is required
-.Nm sudo Ns No 's
+.Nm sudo Ns 's
 .Fl n
 option was specified but a password was required.
 .It sorry, you are not allowed to set the following environment variables
@@ -2995,18 +3375,19 @@ Normally,
 tries to open
 .Em sudoers
 using group permissions to avoid this problem.
-Consider changing the ownership of
+Consider either changing the ownership of
 .Pa @sysconfdir@/sudoers
-by adding an option like
+or adding an argument like
 .Dq sudoers_uid=N
 (where
 .Sq N
 is the user ID that owns the
 .Em sudoers
-file) to the
+file) to the end of the
 .Nm sudoers
-plugin line in the
-.Pa @sysconfdir@/sudo.conf
+.Li Plugin
+line in the
+.Xr sudo.conf @mansectform@
 file.
 .It unable to stat @sysconfdir@/sudoers
 The
@@ -3030,8 +3411,9 @@ is the user ID that owns the
 .Em sudoers
 file) to the
 .Nm sudoers
-plugin line in the
-.Pa @sysconfdir@/sudo.conf
+.Li Plugin
+line in the
+.Xr sudo.conf @mansectform@
 file.
 .It @sysconfdir@/sudoers is world writable
 The permissions on the
@@ -3045,8 +3427,9 @@ The default mode may be changed via the
 .Dq sudoers_mode
 option to the
 .Nm sudoers
-plugin line in the
-.Pa @sysconfdir@/sudo.conf
+.Li Plugin
+line in the
+.Xr sudo.conf @mansectform@
 file.
 .It @sysconfdir@/sudoers is owned by gid N, should be 1
 The
@@ -3062,18 +3445,38 @@ is the group ID that owns the
 .Em sudoers
 file) to the
 .Nm sudoers
-plugin line in the
-.Pa @sysconfdir@/sudo.conf
+.Li Plugin
+line in the
+.Xr sudo.conf @mansectform@
 file.
-.It unable to open @timedir@/username/ttyname
+.It unable to open @rundir@/ts/username
 .Em sudoers
 was unable to read or create the user's time stamp file.
-.It unable to write to @timedir@/username/ttyname
+This can happen when
+.Em timestampowner
+is set to a user other than root and the mode on
+.Pa @rundir@
+is not searchable by group or other.
+The default mode for
+.Pa @rundir@
+is 0711.
+.It unable to write to @rundir@/ts/username
 .Em sudoers
 was unable to write to the user's time stamp file.
-.It unable to mkdir to @timedir@/username
+.It @rundir@/ts is owned by uid X, should be Y
+The time stamp directory is owned by a user other than
+.Em timestampowner .
+This can occur when the value of
+.Em timestampowner
+has been changed.
 .Em sudoers
-was unable to create the user's time stamp directory.
+will ignore the time stamp directory until the owner is corrected.
+.It @rundir@/ts is group writable
+The time stamp directory is group-writable; it should be writable only by
+.Em timestampowner .
+The default mode for the time stamp directory is 0700.
+.Em sudoers
+will ignore the time stamp directory until the mode is corrected.
 .El
 .Ss Notes on logging via syslog
 By default,
@@ -3140,170 +3543,6 @@ option is set to 0 (or negated with a
 .Ql \&! ) ,
 word wrap will be disabled.
 .El
-.Sh SUDO.CONF
-The
-.Pa @sysconfdir@/sudo.conf
-file determines which plugins the
-.Nm sudo
-front end will load.
-If no
-.Pa @sysconfdir@/sudo.conf
-file
-is present, or it contains no
-.Li Plugin
-lines,
-.Nm sudo
-will use the
-.Em sudoers
-security policy and I/O logging, which corresponds to the following
-.Pa @sysconfdir@/sudo.conf
-file.
-.Bd -literal
-#
-# Default @sysconfdir@/sudo.conf file
-#
-# Format:
-#   Plugin plugin_name plugin_path plugin_options ...
-#   Path askpass /path/to/askpass
-#   Path noexec /path/to/sudo_noexec.so
-#   Debug sudo /var/log/sudo_debug all@warn
-#   Set disable_coredump true
-#
-# The plugin_path is relative to @prefix@/libexec unless
-#   fully qualified.
-# The plugin_name corresponds to a global symbol in the plugin
-#   that contains the plugin interface structure.
-# The plugin_options are optional.
-#
-Plugin policy_plugin sudoers.so
-Plugin io_plugin sudoers.so
-.Ed
-.Ss Plugin options
-Starting with
-.Nm sudo
-1.8.5, it is possible to pass options to the
-.Em sudoers
-plugin.
-Options may be listed after the path to the plugin (i.e.\& after
-.Pa sudoers.so ) ;
-multiple options should be space-separated.
-For example:
-.Bd -literal
-Plugin sudoers_policy sudoers.so sudoers_file=/etc/sudoers sudoers_uid=0 sudoers_gid=0 sudoers_mode=0440
-.Ed
-.Pp
-The following plugin options are supported:
-.Bl -tag -width 8n
-.It sudoers_file=pathname
-The
-.Em sudoers_file
-option can be used to override the default path
-to the
-.Em sudoers
-file.
-.It sudoers_uid=uid
-The
-.Em sudoers_uid
-option can be used to override the default owner of the sudoers file.
-It should be specified as a numeric user ID.
-.It sudoers_gid=gid
-The
-.Em sudoers_gid
-option can be used to override the default group of the sudoers file.
-It should be specified as a numeric group ID.
-.It sudoers_mode=mode
-The
-.Em sudoers_mode
-option can be used to override the default file mode for the sudoers file.
-It should be specified as an octal value.
-.El
-.Ss Debug flags
-Versions 1.8.4 and higher of the
-.Em sudoers
-plugin supports a debugging framework that can help track down what the
-plugin is doing internally if there is a problem.
-This can be configured in the
-.Pa @sysconfdir@/sudo.conf
-file as described in
-.Xr sudo @mansectsu@ .
-.Pp
-The
-.Em sudoers
-plugin uses the same debug flag format as the
-.Nm sudo
-front-end:
-.Em subsystem Ns No @ Ns Em priority .
-.Pp
-The priorities used by
-.Em sudoers ,
-in order of decreasing severity,
-are:
-.Em crit ,
-.Em err ,
-.Em warn ,
-.Em notice ,
-.Em diag ,
-.Em info ,
-.Em trace
-and
-.Em debug .
-Each priority, when specified, also includes all priorities higher than it.
-For example, a priority of
-.Em notice
-would include debug messages logged at
-.Em notice
-and higher.
-.Pp
-The following subsystems are used by
-.Em sudoers :
-.Bl -tag -width 8n
-.It Em alias
-.Li User_Alias ,
-.Li Runas_Alias ,
-.Li Host_Alias
-and
-.Li Cmnd_Alias
-processing
-.It Em all
-matches every subsystem
-.It Em audit
-BSM and Linux audit code
-.It Em auth
-user authentication
-.It Em defaults
-.Em sudoers
-.Em Defaults
-settings
-.It Em env
-environment handling
-.It Em ldap
-LDAP-based sudoers
-.It Em logging
-logging support
-.It Em match
-matching of users, groups, hosts and netgroups in
-.Em sudoers
-.It Em netif
-network interface handling
-.It Em nss
-network service switch handling in
-.Em sudoers
-.It Em parser
-.Em sudoers
-file parsing
-.It Em perms
-permission setting
-.It Em plugin
-The equivalent of
-.Em main
-for the plugin.
-.It Em pty
-pseudo-tty related code
-.It Em rbtree
-redblack tree internals
-.It Em util
-utility functions
-.El
 .Sh FILES
 .Bl -tag -width 24n
 .It Pa @sysconfdir@/sudo.conf
@@ -3316,8 +3555,12 @@ Local groups file
 List of network groups
 .It Pa @iolog_dir@
 I/O log files
-.It Pa @timedir@
+.It Pa @rundir@/ts
 Directory containing time stamps for the
+.Em sudoers
+security policy
+.It Pa @vardir@/lectured
+Directory containing lecture status files for the
 .Em sudoers
 security policy
 .It Pa /etc/environment
@@ -3360,7 +3603,9 @@ Host_Alias	CDROM = orion, perseus, hercules
 
 # Cmnd alias specification
 Cmnd_Alias	DUMPS = /usr/bin/mt, /usr/sbin/dump, /usr/sbin/rdump,\e
-			/usr/sbin/restore, /usr/sbin/rrestore
+			/usr/sbin/restore, /usr/sbin/rrestore,\e
+			sha224:0GomF8mNN3wlDt1HD9XldjJ3SNgpFdbjO1+NsQ== \e
+			/home/operator/bin/start_backups
 Cmnd_Alias	KILL = /usr/bin/kill
 Cmnd_Alias	PRINTING = /usr/sbin/lpc, /usr/bin/lprm
 Cmnd_Alias	SHUTDOWN = /usr/sbin/shutdown
@@ -3404,6 +3649,10 @@ Lastly, we disable shell escapes for the commands in the PAGERS
 and
 .Pa /usr/bin/less
 .Pc .
+Note that this will not effectively constrain users with
+.Nm sudo
+.Sy ALL
+privileges.
 .Bd -literal
 # Override built-in defaults
 Defaults		syslog=auth
@@ -3493,6 +3742,15 @@ Here, those are commands related to backups, killing processes, the
 printing system, shutting down the system, and any commands in the
 directory
 .Pa /usr/oper/bin/ .
+Note that one command in the
+.Li DUMPS
+Cmnd_Alias includes a sha224 digest,
+.Pa /home/operator/bin/start_backups .
+This is because the directory containing the script is writable by the
+operator user.
+If the script is modified (resulting in a digest mismatch) it will no longer
+be possible to run it via
+.Nm sudo .
 .Bd -literal
 joe		ALL = /usr/bin/su operator
 .Ed
@@ -3626,6 +3884,14 @@ belonging to the
 and
 .Em SHELLS
 .Li Cmnd_Aliases .
+While not specifically mentioned in the rule, the commands in the
+.Em PAGERS
+.Li Cmnd_Alias
+all reside in
+.Pa /usr/bin
+and have the
+.Em noexec
+option set.
 .Bd -literal
 steve		CSNETS = (operator) /usr/local/op_commands/
 .Ed
@@ -3732,7 +3998,7 @@ executes a program, that program is free to do whatever
 it pleases, including run other programs.
 This can be a security issue since it is not uncommon for a program to
 allow shell escapes, which lets a user bypass
-.Nm sudo Ns No 's
+.Nm sudo Ns 's
 access control and logging.
 Common programs that permit shell escapes include shells (obviously),
 editors, paginators, mail and terminal programs.
@@ -3758,7 +4024,7 @@ variable (usually
 .Ev LD_PRELOAD )
 to an alternate shared library.
 On such systems,
-.Nm sudo Ns No 's
+.Nm sudo Ns 's
 .Em noexec
 functionality can be used to prevent a program run by
 .Nm sudo
@@ -3821,46 +4087,89 @@ operations (such as changing or overwriting files) that could lead
 to unintended privilege escalation.
 In the specific case of an editor, a safer approach is to give the
 user permission to run
-.Nm sudoedit .
+.Nm sudoedit
+(see below).
+.Ss Secure editing
+The
+.Em sudoers
+plugin includes
+.Nm sudoedit
+support which allows users to securely edit files with the editor
+of their choice.
+As
+.Nm sudoedit
+is a built-in command, it must be specified in
+.Em sudoers
+without a leading path.
+However, it may take command line arguments just as a normal command does.
+For example, to allow user operator to edit the
+.Dq message of the day
+file:
+.Bd -literal -offset indent
+operator	sudoedit /etc/motd
+.Ed
+.Pp
+The operator user then runs
+.Nm sudoedit
+as follows:
+.Bd -literal -offset indent
+$ sudoedit /etc/motd
+.Ed
+.Pp
+The editor will run as the operator user, not root, on a temporary copy of
+.Pa /etc/motd .
+After the file has been edited,
+.Pa /etc/motd
+will be updated with the contents of the temporary copy.
 .Ss Time stamp file checks
 .Em sudoers
 will check the ownership of its time stamp directory
 .Po
-.Pa @timedir@
+.Pa @rundir@/ts
 by default
 .Pc
 and ignore the directory's contents if it is not owned by root or
 if it is writable by a user other than root.
-On systems that allow non-root users to give away files via
-.Xr chown 2 ,
-if the time stamp directory is located in a world-writable
-directory (e.g.\&,
-.Pa /tmp ) ,
-it is possible for a user to create the time stamp directory before
+Older versions of
 .Nm sudo
-is run.
-However, because
+stored time stamp files in
+.Pa /tmp ;
+this is no longer recommended as it may be possible for a user
+to create the time stamp themselves on systems that allow
+unprivileged users to change the ownership of files they create.
+.Pp
+While the time stamp directory
+.Em should
+be cleared at reboot time, not all systems contain a
+.Pa /var/run
+directory.
+To avoid potential problems,
 .Em sudoers
-checks the ownership and mode of the directory and its
-contents, the only damage that can be done is to
-.Dq hide
-files by putting them in the time stamp dir.
-This is unlikely to happen since once the time stamp dir is owned by root
-and inaccessible by any other user, the user placing files there would be
-unable to get them back out.
+will ignore time stamp files that date from before the machine booted
+on systems where the boot time is available.
+.Pp
+Some systems with graphical desktop environments allow unprivileged
+users to change the system clock.
+Since
+.Em sudoers
+relies on the system clock for time stamp validation, it may be
+possible on such systems for a user to run
+.Nm sudo
+for longer than
+.Em timestamp_timeout
+by setting the clock back.
+To combat this,
+.Em sudoers
+uses a monotonic clock (which never moves backwards) for its time stamps
+if the system supports it.
 .Pp
 .Em sudoers
 will not honor time stamps set far in the future.
 Time stamps with a date greater than current_time + 2 *
 .Li TIMEOUT
-will be ignored and sudo will log and complain.
-This is done to keep a user from creating his/her own time stamp with a
-bogus date on systems that allow users to give away files if the time
-stamp directory is located in a world-writable directory.
-.Pp
-On systems where the boot time is available,
+will be ignored and
 .Em sudoers
-will ignore time stamps that date from before the machine booted.
+will log and complain.
 .Pp
 Since time stamp files live in the file system, they can outlive a
 user's login session.
@@ -3868,24 +4177,116 @@ As a result, a user may be able to login, run a command with
 .Nm sudo
 after authenticating, logout, login again, and run
 .Nm sudo
-without authenticating so long as the time stamp file's modification
-time is within
+without authenticating so long as the record's time stamp is within
 .Li @timeout@
-minutes (or whatever the timeout is set to in
+minutes (or whatever value the timeout is set to in
 .Em sudoers ) .
 When the
 .Em tty_tickets
-option is enabled, the time stamp has per-tty granularity but still
+option is enabled, the time stamp record includes the device
+number of the terminal the user authenticated with.
+This provides per-tty granularity but time stamp records still
 may outlive the user's session.
-On Linux systems where the devpts filesystem is used, Solaris systems
-with the devices filesystem, as well as other systems that utilize a
-devfs filesystem that monotonically increase the inode number of devices
-as they are created (such as Mac OS X),
+The time stamp record also includes the session ID of the process
+that last authenticated.
+This prevents processes in different terminal sessions from using
+the same time stamp record.
+It also helps reduce the chance that a user will be able to run
+.Nm sudo
+without entering a password when logging out and back in again
+on the same terminal.
+.Sh DEBUGGING
+Versions 1.8.4 and higher of the
+.Nm sudoers
+plugin support a flexible debugging framework that can help track
+down what the plugin is doing internally if there is a problem.
+This can be configured in the
+.Xr sudo.conf @mansectform@
+file.
+.Pp
+The
+.Nm sudoers
+plugin uses the same debug flag format as the
+.Nm sudo
+front-end:
+.Em subsystem Ns @ Ns Em priority .
+.Pp
+The priorities used by
+.Nm sudoers ,
+in order of decreasing severity,
+are:
+.Em crit , err , warn , notice , diag , info , trace
+and
+.Em debug .
+Each priority, when specified, also includes all priorities higher
+than it.
+For example, a priority of
+.Em notice
+would include debug messages logged at
+.Em notice
+and higher.
+.Pp
+The following subsystems are used by the
+.Nm sudoers
+plugin:
+.Bl -tag -width 8n
+.It Em alias
+.Li User_Alias ,
+.Li Runas_Alias ,
+.Li Host_Alias
+and
+.Li Cmnd_Alias
+processing
+.It Em all
+matches every subsystem
+.It Em audit
+BSM and Linux audit code
+.It Em auth
+user authentication
+.It Em defaults
 .Em sudoers
-is able to determine when a tty-based time stamp file is stale and will
-ignore it.
-Administrators should not rely on this feature as it is not universally
-available.
+.Em Defaults
+settings
+.It Em env
+environment handling
+.It Em ldap
+LDAP-based sudoers
+.It Em logging
+logging support
+.It Em match
+matching of users, groups, hosts and netgroups in
+.Em sudoers
+.It Em netif
+network interface handling
+.It Em nss
+network service switch handling in
+.Em sudoers
+.It Em parser
+.Em sudoers
+file parsing
+.It Em perms
+permission setting
+.It Em plugin
+The equivalent of
+.Em main
+for the plugin.
+.It Em pty
+pseudo-tty related code
+.It Em rbtree
+redblack tree internals
+.It Em sssd
+SSSD-based sudoers
+.It Em util
+utility functions
+.El
+For example:
+.Bd -literal
+Debug sudo /var/log/sudo_debug match@info,nss@info
+.Ed
+.Pp
+For more information, see the
+.Xr sudo.conf @mansectform@
+manual.
 .Sh SEE ALSO
 .Xr ssh 1 ,
 .Xr su 1 ,
@@ -3893,6 +4294,7 @@ available.
 .Xr glob 3 ,
 .Xr mktemp 3 ,
 .Xr strftime 3 ,
+.Xr sudo.conf @mansectform@ ,
 .Xr sudoers.ldap @mansectform@ ,
 .Xr sudo_plugin @mansectsu@ ,
 .Xr sudo @mansectsu@ ,

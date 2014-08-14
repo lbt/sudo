@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003-2012 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2003-2013 Todd C. Miller <Todd.Miller@courtesan.com>
  * Copyright (c) 2011 Daniel Kopecek <dkopecek@redhat.com>
  *
  * This code is derived from software contributed by Aaron Spangler.
@@ -21,7 +21,6 @@
 
 #include <sys/types.h>
 #include <sys/time.h>
-#include <sys/param.h>
 #include <sys/stat.h>
 #include <stdio.h>
 #ifdef STDC_HEADERS
@@ -41,13 +40,8 @@
 #ifdef HAVE_UNISTD_H
 # include <unistd.h>
 #endif /* HAVE_UNISTD_H */
-#if TIME_WITH_SYS_TIME
+#ifdef TIME_WITH_SYS_TIME
 # include <time.h>
-#endif
-#ifdef HAVE_DLOPEN
-# include <dlfcn.h>
-#else
-# include "compat/dlfcn.h"
 #endif
 #include <ctype.h>
 #include <pwd.h>
@@ -59,6 +53,7 @@
 #include "sudoers.h"
 #include "parse.h"
 #include "lbuf.h"
+#include "sudo_dso.h"
 #include "sudo_debug.h"
 
 /* SSSD <--> SUDO interface - do not change */
@@ -180,7 +175,7 @@ sudo_sss_filter_result(struct sudo_sss_handle *handle,
     debug_decl(sudo_sss_filter_result, SUDO_DEBUG_SSSD)
 
     sudo_debug_printf(SUDO_DEBUG_DEBUG, "in_res=%p, count=%u, act=%s",
-	in_res, in_res->num_rules,
+	in_res, in_res ? in_res->num_rules : 0,
 	act == _SUDO_SSS_FILTER_EXCLUDE ? "EXCLUDE" : "INCLUDE");
 
     if (in_res == NULL)
@@ -212,7 +207,13 @@ sudo_sss_filter_result(struct sudo_sss_handle *handle,
 	sudo_debug_printf(SUDO_DEBUG_DEBUG,
 	    "reallocating result: %p (count: %u -> %u)", out_res->rules,
 	    in_res->num_rules, l);
-	out_res->rules = erealloc3(out_res->rules, l, sizeof(struct sss_sudo_rule));
+	if (l > 0) {
+	    out_res->rules =
+		erealloc3(out_res->rules, l, sizeof(struct sss_sudo_rule));
+	} else {
+	    efree(out_res->rules);
+	    out_res->rules = NULL;
+	}
     }
 
     out_res->num_rules = l;
@@ -221,8 +222,7 @@ sudo_sss_filter_result(struct sudo_sss_handle *handle,
 }
 
 struct sudo_nss sudo_nss_sss = {
-    &sudo_nss_sss,
-    NULL,
+    { NULL, NULL },
     sudo_sss_open,
     sudo_sss_close,
     sudo_sss_parse,
@@ -246,45 +246,49 @@ static int sudo_sss_open(struct sudo_nss *nss)
     handle = emalloc(sizeof(struct sudo_sss_handle));
 
     /* Load symbols */
-    handle->ssslib = dlopen(path, RTLD_LAZY);
+    handle->ssslib = sudo_dso_load(path, SUDO_DSO_LAZY);
     if (handle->ssslib == NULL) {
-	warningx(_("Unable to dlopen %s: %s"), path, dlerror());
-	warningx(_("Unable to initialize SSS source. Is SSSD installed on your machine?"));
+	warningx(U_("unable to load %s: %s"), path, sudo_dso_strerror());
+	warningx(U_("unable to initialize SSS source. Is SSSD installed on your machine?"));
 	debug_return_int(EFAULT);
     }
 
-    handle->fn_send_recv = dlsym(handle->ssslib, "sss_sudo_send_recv");
+    handle->fn_send_recv =
+	sudo_dso_findsym(handle->ssslib, "sss_sudo_send_recv");
     if (handle->fn_send_recv == NULL) {
-	warningx(_("unable to find symbol \"%s\" in %s"), path,
+	warningx(U_("unable to find symbol \"%s\" in %s"), path,
 	   "sss_sudo_send_recv");
 	debug_return_int(EFAULT);
     }
 
     handle->fn_send_recv_defaults =
-	dlsym(handle->ssslib, "sss_sudo_send_recv_defaults");
+	sudo_dso_findsym(handle->ssslib, "sss_sudo_send_recv_defaults");
     if (handle->fn_send_recv_defaults == NULL) {
-	warningx(_("unable to find symbol \"%s\" in %s"), path,
+	warningx(U_("unable to find symbol \"%s\" in %s"), path,
 	   "sss_sudo_send_recv_defaults");
 	debug_return_int(EFAULT);
     }
 
-    handle->fn_free_result = dlsym(handle->ssslib, "sss_sudo_free_result");
+    handle->fn_free_result =
+	sudo_dso_findsym(handle->ssslib, "sss_sudo_free_result");
     if (handle->fn_free_result == NULL) {
-	warningx(_("unable to find symbol \"%s\" in %s"), path,
+	warningx(U_("unable to find symbol \"%s\" in %s"), path,
 	   "sss_sudo_free_result");
 	debug_return_int(EFAULT);
     }
 
-    handle->fn_get_values = dlsym(handle->ssslib, "sss_sudo_get_values");
+    handle->fn_get_values =
+	sudo_dso_findsym(handle->ssslib, "sss_sudo_get_values");
     if (handle->fn_get_values == NULL) {
-	warningx(_("unable to find symbol \"%s\" in %s"), path,
+	warningx(U_("unable to find symbol \"%s\" in %s"), path,
 	   "sss_sudo_get_values");
 	debug_return_int(EFAULT);
     }
 
-    handle->fn_free_values = dlsym(handle->ssslib, "sss_sudo_free_values");
+    handle->fn_free_values =
+	sudo_dso_findsym(handle->ssslib, "sss_sudo_free_values");
     if (handle->fn_free_values == NULL) {
-	warningx(_("unable to find symbol \"%s\" in %s"), path,
+	warningx(U_("unable to find symbol \"%s\" in %s"), path,
 	   "sss_sudo_free_values");
 	debug_return_int(EFAULT);
     }
@@ -306,10 +310,9 @@ static int sudo_sss_close(struct sudo_nss *nss)
 
     if (nss && nss->handle) {
 	handle = nss->handle;
-	dlclose(handle->ssslib);
+	sudo_dso_unload(handle->ssslib);
+	efree(nss->handle);
     }
-
-    efree(nss->handle);
     debug_return_int(0);
 }
 
@@ -345,7 +348,7 @@ static int sudo_sss_setdefs(struct sudo_nss *nss)
 
     if (sss_error == ENOENT) {
 	sudo_debug_printf(SUDO_DEBUG_INFO, "The user was not found in SSSD.");
-	debug_return_int(-1);
+	debug_return_int(0);
     } else if(sss_error != 0) {
 	sudo_debug_printf(SUDO_DEBUG_INFO, "sss_error=%u\n", sss_error);
 	debug_return_int(-1);
@@ -466,7 +469,7 @@ sudo_sss_check_runas_user(struct sudo_sss_handle *handle, struct sss_sudo_rule *
 	    /* FALLTHROUGH */
 	    sudo_debug_printf(SUDO_DEBUG_DEBUG, "FALLTHROUGH");
 	default:
-	    if (strcasecmp(val, runas_pw->pw_name) == 0) {
+	    if (userpw_matches(val, runas_pw->pw_name, runas_pw)) {
 		sudo_debug_printf(SUDO_DEBUG_DEBUG,
 		    "%s == %s (pw_name) => match", val, runas_pw->pw_name);
 		ret = true;
@@ -529,30 +532,31 @@ sudo_sss_check_runas_group(struct sudo_sss_handle *handle, struct sss_sudo_rule 
  * Walk through search results and return true if we have a runas match,
  * else false.  RunAs info is optional.
  */
-static int
+static bool
 sudo_sss_check_runas(struct sudo_sss_handle *handle, struct sss_sudo_rule *rule)
 {
-    int ret;
+    bool ret;
     debug_decl(sudo_sss_check_runas, SUDO_DEBUG_SSSD);
 
     if (rule == NULL)
-	 debug_return_int(false);
+	 debug_return_bool(false);
 
     ret = sudo_sss_check_runas_user(handle, rule) != false &&
 	 sudo_sss_check_runas_group(handle, rule) != false;
 
-    debug_return_int(ret);
+    debug_return_bool(ret);
 }
 
-static int
+static bool
 sudo_sss_check_host(struct sudo_sss_handle *handle, struct sss_sudo_rule *rule)
 {
     char **val_array, *val;
-    int ret = false, i;
+    bool ret = false;
+    int i;
     debug_decl(sudo_sss_check_host, SUDO_DEBUG_SSSD);
 
     if (rule == NULL)
-	debug_return_int(ret);
+	debug_return_bool(ret);
 
     /* get the values from the rule */
     switch (handle->fn_get_values(rule, "sudoHost", &val_array))
@@ -561,10 +565,10 @@ sudo_sss_check_host(struct sudo_sss_handle *handle, struct sss_sudo_rule *rule)
 	break;
     case ENOENT:
 	sudo_debug_printf(SUDO_DEBUG_INFO, "No result.");
-	debug_return_int(false);
+	debug_return_bool(false);
     default:
 	sudo_debug_printf(SUDO_DEBUG_INFO, "handle->fn_get_values(sudoHost): != 0");
-	debug_return_int(ret);
+	debug_return_bool(ret);
     }
 
     /* walk through values */
@@ -584,7 +588,56 @@ sudo_sss_check_host(struct sudo_sss_handle *handle, struct sss_sudo_rule *rule)
 
     handle->fn_free_values(val_array);
 
-    debug_return_int(ret);
+    debug_return_bool(ret);
+}
+
+/*
+ * Look for netgroup specifcations in the sudoUser attribute and
+ * if found, filter according to netgroup membership.
+ *  returns:
+ *   true -> netgroup spec found && netgroup member
+ *  false -> netgroup spec found && not a member of netgroup
+ *   true -> netgroup spec not found (filtered by SSSD already, netgroups are an exception)
+ */
+static bool
+sudo_sss_filter_user_netgroup(struct sudo_sss_handle *handle, struct sss_sudo_rule *rule)
+{
+    bool ret = false, netgroup_spec_found = false;
+    char **val_array, *val;
+    int i;
+    debug_decl(sudo_sss_filter_user_netgroup, SUDO_DEBUG_SSSD);
+
+    if (!handle || !rule)
+	debug_return_bool(ret);
+
+    switch (handle->fn_get_values(rule, "sudoUser", &val_array)) {
+	case 0:
+	    break;
+	case ENOENT:
+	    sudo_debug_printf(SUDO_DEBUG_INFO, "No result.");
+	    debug_return_bool(ret);
+	default:
+	    sudo_debug_printf(SUDO_DEBUG_INFO,
+		"handle->fn_get_values(sudoUser): != 0");
+	    debug_return_bool(ret);
+    }
+
+    for (i = 0; val_array[i] != NULL && !ret; ++i) {
+	val = val_array[i];
+	if (*val == '+') {
+	    netgroup_spec_found = true;
+	}
+	sudo_debug_printf(SUDO_DEBUG_DEBUG, "val[%d]=%s", i, val);
+	if (strcmp(val, "ALL") == 0 || netgr_matches(val, NULL, NULL, handle->pw->pw_name)) {
+	    ret = true;
+	    sudo_debug_printf(SUDO_DEBUG_DIAG,
+		"sssd/ldap sudoUser '%s' ... MATCH! (%s)",
+		val, handle->pw->pw_name);
+	    break;
+	}
+    }
+    handle->fn_free_values(val_array);
+    debug_return_bool(netgroup_spec_found ? ret : true);
 }
 
 static int
@@ -594,7 +647,8 @@ sudo_sss_result_filterp(struct sudo_sss_handle *handle,
     (void)unused;
     debug_decl(sudo_sss_result_filterp, SUDO_DEBUG_SSSD);
 
-    if (sudo_sss_check_host(handle, rule))
+    if (sudo_sss_check_host(handle, rule) &&
+        sudo_sss_filter_user_netgroup(handle, rule))
 	debug_return_int(1);
     else
 	debug_return_int(0);
@@ -612,7 +666,8 @@ sudo_sss_result_get(struct sudo_nss *nss, struct passwd *pw, uint32_t *state)
 	debug_return_ptr(NULL);
 
     sudo_debug_printf(SUDO_DEBUG_DIAG, "  username=%s", handle->pw->pw_name);
-    sudo_debug_printf(SUDO_DEBUG_DIAG, "domainname=%s", handle->domainname);
+    sudo_debug_printf(SUDO_DEBUG_DIAG, "domainname=%s",
+	handle->domainname ? handle->domainname : "NULL");
 
     u_sss_result = f_sss_result = NULL;
 
@@ -659,11 +714,14 @@ sudo_sss_result_get(struct sudo_nss *nss, struct passwd *pw, uint32_t *state)
 		*state |= _SUDO_SSS_STATE_HOSTMATCH;
 	    }
 	}
+	sudo_debug_printf(SUDO_DEBUG_DEBUG,
+	    "u_sss_result=(%p, %u) => f_sss_result=(%p, %u)", u_sss_result,
+	    u_sss_result->num_rules, f_sss_result, f_sss_result->num_rules);
+    } else {
+	sudo_debug_printf(SUDO_DEBUG_DEBUG,
+	    "u_sss_result=(%p, %u) => f_sss_result=NULL", u_sss_result,
+	    u_sss_result->num_rules);
     }
-
-    sudo_debug_printf(SUDO_DEBUG_DEBUG,
-	"u_sss_result=(%p, %u) => f_sss_result=(%p, %u)", u_sss_result,
-	u_sss_result->num_rules, f_sss_result, f_sss_result->num_rules);
 
     handle->fn_free_result(u_sss_result);
 
@@ -713,6 +771,71 @@ sudo_sss_check_bool(struct sudo_sss_handle *handle, struct sss_sudo_rule *rule,
 }
 
 /*
+ * If a digest prefix is present, fills in struct sudo_digest
+ * and returns a pointer to it, updating cmnd to point to the
+ * command after the digest.
+ */
+static struct sudo_digest *
+sudo_sss_extract_digest(char **cmnd, struct sudo_digest *digest)
+{
+    char *ep, *cp = *cmnd;
+    int digest_type = SUDO_DIGEST_INVALID;
+    debug_decl(sudo_sss_check_command, SUDO_DEBUG_LDAP)
+
+    /*
+     * Check for and extract a digest prefix, e.g.
+     * sha224:d06a2617c98d377c250edd470fd5e576327748d82915d6e33b5f8db1 /bin/ls
+     */
+    if (cp[0] == 's' && cp[1] == 'h' && cp[2] == 'a') {
+	switch (cp[3]) {
+	case '2':
+	    if (cp[4] == '2' && cp[5] == '4')
+		digest_type = SUDO_DIGEST_SHA224;
+	    else if (cp[4] == '5' && cp[5] == '6')
+		digest_type = SUDO_DIGEST_SHA256;
+	    break;
+	case '3':
+	    if (cp[4] == '8' && cp[5] == '4')
+		digest_type = SUDO_DIGEST_SHA384;
+	    break;
+	case '5':
+	    if (cp[4] == '1' && cp[5] == '2')
+		digest_type = SUDO_DIGEST_SHA512;
+	    break;
+	}
+	if (digest_type != SUDO_DIGEST_INVALID) {
+	    cp += 6;
+	    while (isblank((unsigned char)*cp))
+		cp++;
+	    if (*cp == ':') {
+		cp++;
+		while (isblank((unsigned char)*cp))
+		    cp++;
+		ep = cp;
+		while (*ep != '\0' && !isblank((unsigned char)*ep))
+		    ep++;
+		if (*ep != '\0') {
+		    digest->digest_type = digest_type;
+		    digest->digest_str = estrndup(cp, (size_t)(ep - cp));
+		    cp = ep + 1;
+		    while (isblank((unsigned char)*cp))
+			cp++;
+		    *cmnd = cp;
+		    sudo_debug_printf(SUDO_DEBUG_INFO,
+			"%s digest %s for %s",
+			digest_type == SUDO_DIGEST_SHA224 ? "sha224" :
+			digest_type == SUDO_DIGEST_SHA256 ? "sha256" :
+			digest_type == SUDO_DIGEST_SHA384 ? "sha384" :
+			"sha512", digest->digest_str, cp);
+		    debug_return_ptr(digest);
+		}
+	    }
+	}
+    }
+    debug_return_ptr(NULL);
+}
+
+/*
  * Walk through search results and return true if we have a command match,
  * false if disallowed and UNSPEC if not matched.
  */
@@ -723,6 +846,7 @@ sudo_sss_check_command(struct sudo_sss_handle *handle,
     char **val_array = NULL, *val;
     char *allowed_cmnd, *allowed_args;
     int i, foundbang, ret = UNSPEC;
+    struct sudo_digest digest, *allowed_digest = NULL;
     debug_decl(sudo_sss_check_command, SUDO_DEBUG_SSSD);
 
     if (rule == NULL)
@@ -754,6 +878,9 @@ sudo_sss_check_command(struct sudo_sss_handle *handle,
 	    continue;
 	}
 
+        /* check for sha-2 digest */
+	allowed_digest = sudo_sss_extract_digest(&val, &digest);
+
 	/* check for !command */
 	if (*val == '!') {
 	    foundbang = true;
@@ -769,7 +896,7 @@ sudo_sss_check_command(struct sudo_sss_handle *handle,
 	    *allowed_args++ = '\0';
 
 	/* check the command like normal */
-	if (command_matches(allowed_cmnd, allowed_args)) {
+	if (command_matches(allowed_cmnd, allowed_args, NULL)) {
 	    /*
 	     * If allowed (no bang) set ret but keep on checking.
 	     * If disallowed (bang), exit loop.

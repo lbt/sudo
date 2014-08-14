@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2010-2013 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -31,10 +31,12 @@
 #include <string.h>
 #include <libaudit.h>
 
+#define DEFAULT_TEXT_DOMAIN	"sudoers"
+#include "gettext.h"		/* must be included before missing.h */
+
 #include "missing.h"
-#include "error.h"
+#include "fatal.h"
 #include "alloc.h"
-#include "gettext.h"
 #include "sudo_debug.h"
 #include "linux_audit.h"
 
@@ -54,7 +56,7 @@ static linux_audit_open(void)
     if (au_fd == -1) {
 	/* Kernel may not have audit support. */
 	if (errno != EINVAL && errno != EPROTONOSUPPORT && errno != EAFNOSUPPORT)
-	    error(1, _("unable to open audit system"));
+	    fatal(U_("unable to open audit system"));
     } else {
 	(void)fcntl(au_fd, F_SETFD, FD_CLOEXEC);
     }
@@ -79,7 +81,7 @@ linux_audit_command(char *argv[], int result)
     for (av = argv; *av != NULL; av++) {
 	n = strlcpy(cp, *av, size - (cp - command));
 	if (n >= size - (cp - command)) {
-	    errorx(1, _("internal error, %s overflow"),
+	    fatalx(U_("internal error, %s overflow"),
 		"linux_audit_command()");
 	}
 	cp += n;
@@ -90,7 +92,7 @@ linux_audit_command(char *argv[], int result)
     /* Log command, ignoring ECONNREFUSED on error. */
     rc = audit_log_user_command(au_fd, AUDIT_USER_CMD, command, NULL, result);
     if (rc <= 0 && errno != ECONNREFUSED)
-	warning(_("unable to send audit message"));
+	warning(U_("unable to send audit message"));
 
     efree(command);
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2010-2011 Todd C. Miller <Todd.Miller@courtesan.com>
+ * Copyright (c) 2008, 2010-2013 Todd C. Miller <Todd.Miller@courtesan.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -31,13 +31,14 @@
 #include <usersec.h>
 #include <uinfo.h>
 
+#define DEFAULT_TEXT_DOMAIN	"sudo"
+#include "gettext.h"		/* must be included before missing.h */
+
 #include "missing.h"
 #include "alloc.h"
-#include "error.h"
+#include "fatal.h"
 #include "sudo_debug.h"
-
-#define DEFAULT_TEXT_DOMAIN	"sudo"
-#include "gettext.h"
+#include "sudo_util.h"
 
 #ifdef HAVE_GETUSERATTR
 
@@ -90,7 +91,7 @@ aix_setlimits(char *user)
     debug_decl(aix_setlimits, SUDO_DEBUG_UTIL)
 
     if (setuserdb(S_READ) != 0)
-	error(1, "unable to open userdb");
+	fatal(U_("unable to open userdb"));
 
     /*
      * For each resource limit, get the soft/hard values for the user
@@ -147,10 +148,10 @@ aix_setauthdb(char *user)
 
     if (user != NULL) {
 	if (setuserdb(S_READ) != 0)
-	    error(1, _("unable to open userdb"));
+	    fatal(U_("unable to open userdb"));
 	if (getuserattr(user, S_REGISTRY, &registry, SEC_CHAR) == 0) {
 	    if (setauthdb(registry, NULL) != 0)
-		error(1, _("unable to switch to registry \"%s\" for %s"),
+		fatal(U_("unable to switch to registry \"%s\" for %s"),
 		    registry, user);
 	}
 	enduserdb();
@@ -167,7 +168,7 @@ aix_restoreauthdb(void)
     debug_decl(aix_setauthdb, SUDO_DEBUG_UTIL)
 
     if (setauthdb(NULL, NULL) != 0)
-	error(1, _("unable to restore registry"));
+	fatal(U_("unable to restore registry"));
 
     debug_return;
 }
